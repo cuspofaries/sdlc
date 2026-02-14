@@ -59,7 +59,8 @@ Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a s
 | 12 | **Verify SBOM integrity** | `sha256sum` | Recomputes the SHA256 of the SBOM file and compares it to the hash recorded at generation (step 4). If the file was modified between generation and attestation, the pipeline stops. |
 | 13 | **Sign digest** | `cosign sign --yes` | Signs the **registry digest** (not the tag) with Cosign. GitHub Actions uses **keyless** mode (OIDC via Sigstore). Azure DevOps uses **Azure Key Vault KMS** (`azurekms://`) as primary method with keyless as fallback. The signature proves the image was produced by this CI/CD pipeline and has not been tampered with. |
 | 14 | **Attest SBOM** | `cosign attest --type cyclonedx` | Cryptographically binds the SBOM to the **registry digest** via an In-Toto attestation. The SBOM attested is the exact same file generated in step 4 — never regenerated or modified (verified by step 12). This is the **strongest guarantee**: it proves that THIS SBOM describes exactly THIS image. |
-| 15 | **Upload to Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Sends the attested SBOM to Dependency-Track for continuous monitoring, linked to the **registry digest** (not the git SHA). **Non-blocking** (`continue-on-error`): DTrack is governance/monitoring, not a CI gate. If DTrack is down, the signed image still ships. Optional (skipped if `dtrack-hostname` is empty). |
+| 15 | **Verify in registry** | `cosign verify` + `cosign verify-attestation` | Automated proof that signature and attestation are actually retrievable from the registry. Catches silent failures, accidental `--no-upload`, or registry persistence issues. **Blocking**: if verification fails, the pipeline stops before declaring success. |
+| 16 | **Upload to Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Sends the attested SBOM to Dependency-Track for continuous monitoring, linked to the **registry digest** (not the git SHA). **Non-blocking** (`continue-on-error`): DTrack is governance/monitoring, not a CI gate. If DTrack is down, the signed image still ships. Optional (skipped if `dtrack-hostname` is empty). |
 
 ### Visual summary
 
@@ -107,7 +108,11 @@ Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a s
   [14]  ATTEST ────────────> SBOM bound to digest (In-Toto)
         |
         v
-  [15]  DTRACK ────────────> Monitoring (non-blocking, linked to digest)
+  [15]  VERIFY ────────────> Signature + attestation in registry?
+        |                         |
+        | OK                      | FAIL → STOP
+        v
+  [16]  DTRACK ────────────> Monitoring (non-blocking, linked to digest)
 ```
 
 ---
@@ -226,6 +231,7 @@ task pipeline \
 | `image:sign` | Sign image digest (cosign) |
 | `image:verify` | Verify image signature |
 | `sbom:attest` | Attest SBOM to image digest |
+| `sbom:attest:verify` | Verify signature and attestation are published in the registry |
 | `sbom:sign:blob` | Sign SBOM as standalone file |
 | `sbom:verify` | Verify SBOM signature and integrity |
 | `sbom:upload` | Upload SBOM to Dependency-Track |
