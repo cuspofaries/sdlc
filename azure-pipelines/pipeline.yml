@@ -378,7 +378,7 @@ stages:
 
     jobs:
       - job: Rescan
-        displayName: 'Rescan SBOMs'
+        displayName: 'Rescan Attested SBOM'
 
         steps:
           - checkout: self
@@ -388,11 +388,114 @@ stages:
             displayName: 'Install Task'
 
           - script: sudo task install:trivy
-            displayName: 'Install Scan Tools'
+            displayName: 'Install Trivy'
 
-          # Download last SBOM from previous pipeline run
+          - script: sudo task install:cosign
+            displayName: 'Install Cosign'
+
+          # Login to Azure (needed for ACR access and KMS verification)
+          - task: AzureCLI@2
+            displayName: 'Azure Login'
+            inputs:
+              azureSubscription: 'azure-service-connection'
+              scriptType: bash
+              addSpnToEnvironment: true
+              scriptLocation: inlineScript
+              inlineScript: |
+                echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
+                echo "##vso[task.setvariable variable=AZURE_CLIENT_ID]$servicePrincipalId"
+                echo "##vso[task.setvariable variable=AZURE_CLIENT_SECRET;issecret=true]$servicePrincipalKey"
+
+          - task: Docker@2
+            displayName: 'Login to ACR'
+            inputs:
+              command: login
+              containerRegistry: 'acr-service-connection'
+
+          # Resolve the latest image digest from ACR
+          - script: |
+              DIGEST=$(az acr repository show \
+                --name "$(ACR_NAME)" \
+                --image "$(IMAGE_NAME):latest" \
+                --query "digest" -o tsv 2>/dev/null || true)
+
+              if [ -z "$DIGEST" ]; then
+                # Try with main branch tag
+                DIGEST=$(az acr repository show-tags \
+                  --name "$(ACR_NAME)" \
+                  --repository "$(IMAGE_NAME)" \
+                  --orderby time_desc \
+                  --top 1 -o tsv 2>/dev/null || true)
+                if [ -n "$DIGEST" ]; then
+                  DIGEST=$(az acr repository show \
+                    --name "$(ACR_NAME)" \
+                    --image "$(IMAGE_NAME):${DIGEST}" \
+                    --query "digest" -o tsv 2>/dev/null || true)
+                fi
+              fi
+
+              if [ -n "$DIGEST" ]; then
+                IMAGE_REF="$(REGISTRY)/$(IMAGE_NAME)@${DIGEST}"
+                echo "##vso[task.setvariable variable=RESCAN_IMAGE]$IMAGE_REF"
+                echo "Latest image: $IMAGE_REF"
+              else
+                echo "##vso[task.logissue type=warning]No image found in ACR, skipping rescan"
+                echo "##vso[task.setvariable variable=RESCAN_IMAGE]"
+              fi
+            displayName: 'Resolve Latest Image Digest from ACR'
+
+          # Extract attested SBOM from registry (source of truth)
+          # Fallback to pipeline artifact if no attestation found
+          - script: |
+              mkdir -p output/sbom/image output/scans
+
+              if [ -z "$(RESCAN_IMAGE)" ]; then
+                echo "No image to rescan"
+                exit 0
+              fi
+
+              echo "Extracting attested SBOM from registry..."
+              SBOM_EXTRACTED=false
+
+              # Attempt 1: Extract SBOM from cosign attestation (source of truth)
+              if [ -n "$(COSIGN_KV_KEY)" ]; then
+                cosign verify-attestation \
+                  --key "azurekms://$(COSIGN_KV_KEY)" \
+                  --type cyclonedx \
+                  "$(RESCAN_IMAGE)" 2>/dev/null \
+                  | jq -r '.payload' | base64 -d \
+                  | jq -r '.predicate' \
+                  > output/sbom/image/sbom-image-trivy.json && SBOM_EXTRACTED=true
+              else
+                cosign verify-attestation \
+                  --certificate-oidc-issuer https://vstoken.dev.azure.com \
+                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/" \
+                  --type cyclonedx \
+                  "$(RESCAN_IMAGE)" 2>/dev/null \
+                  | jq -r '.payload' | base64 -d \
+                  | jq -r '.predicate' \
+                  > output/sbom/image/sbom-image-trivy.json && SBOM_EXTRACTED=true
+              fi
+
+              if [ "$SBOM_EXTRACTED" = true ] && [ -s output/sbom/image/sbom-image-trivy.json ]; then
+                echo "SBOM extracted from attestation (cryptographically verified)"
+                echo "SBOM source: cosign attestation on $(RESCAN_IMAGE)"
+              else
+                echo "##vso[task.logissue type=warning]No attestation found, falling back to pipeline artifact"
+                SBOM_EXTRACTED=false
+              fi
+
+              echo "##vso[task.setvariable variable=SBOM_EXTRACTED]$SBOM_EXTRACTED"
+            displayName: 'Extract Attested SBOM from Registry'
+            env:
+              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+
+          # Fallback: download SBOM from previous pipeline artifact
           - task: DownloadBuildArtifacts@1
-            displayName: 'Download Previous SBOM'
+            displayName: 'Fallback: Download SBOM from Pipeline Artifact'
+            condition: and(ne(variables['RESCAN_IMAGE'], ''), ne(variables['SBOM_EXTRACTED'], 'true'))
             inputs:
               buildType: 'specific'
               project: '$(System.TeamProject)'
@@ -404,14 +507,42 @@ stages:
             continueOnError: true
 
           - script: |
-              if [ -f "sbom-outputs/sbom/image/sbom-image-trivy.json" ]; then
-                mkdir -p output
-                cp -r sbom-outputs/* output/ 2>/dev/null || true
-                task sbom:scan TRIVY_EXIT_CODE=0
-              else
-                echo "No previous SBOM found, skipping rescan"
+              if [ "$(SBOM_EXTRACTED)" != "true" ] && [ -f "sbom-outputs/sbom/image/sbom-image-trivy.json" ]; then
+                mkdir -p output/sbom/image
+                cp sbom-outputs/sbom/image/sbom-image-trivy.json output/sbom/image/
+                echo "SBOM loaded from pipeline artifact (fallback)"
               fi
-            displayName: 'Rescan for New Vulns'
+            condition: and(ne(variables['RESCAN_IMAGE'], ''), ne(variables['SBOM_EXTRACTED'], 'true'))
+            displayName: 'Restore SBOM from Artifact'
+
+          # Rescan the SBOM with latest vulnerability data
+          - script: |
+              if [ -z "$(RESCAN_IMAGE)" ]; then
+                echo "No image to rescan, skipping"
+                exit 0
+              fi
+
+              if [ ! -s "output/sbom/image/sbom-image-trivy.json" ]; then
+                echo "No SBOM available (neither attestation nor artifact), skipping"
+                exit 0
+              fi
+
+              echo "Rescanning SBOM for new vulnerabilities..."
+              echo "Image: $(RESCAN_IMAGE)"
+              echo "SBOM source: $(if [ '$(SBOM_EXTRACTED)' = 'true' ]; then echo 'cosign attestation'; else echo 'pipeline artifact (fallback)'; fi)"
+
+              trivy sbom output/sbom/image/sbom-image-trivy.json \
+                --severity HIGH,CRITICAL \
+                --exit-code 0 \
+                --format json \
+                --output output/scans/rescan-trivy.json
+
+              trivy sbom output/sbom/image/sbom-image-trivy.json \
+                --severity HIGH,CRITICAL \
+                --exit-code 0
+
+              echo "Rescan complete"
+            displayName: 'Rescan for New Vulnerabilities'
 
 # =============================================================================
 # CHECKLIST — Porter ce pipeline sur Azure DevOps
