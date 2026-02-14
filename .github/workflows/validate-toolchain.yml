@@ -31,13 +31,8 @@ jobs:
         run: |
           sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
 
-      - name: Set up Node.js (for cdxgen)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Install SBOM tools
-        run: sudo env "PATH=$PATH" task install
+        run: sudo task install
 
       - name: Verify tools installed
         run: task install:verify
