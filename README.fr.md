@@ -204,7 +204,7 @@ Les politiques baseline (`policies/sbom-compliance.rego`) incluent :
 | **deny** | Packages bloques (`event-stream`, `colors`, `faker`...) | Attaques supply chain connues ou sabotage |
 | **deny** | Composants sans version | Impossible de suivre les vulnerabilites sans version |
 | **deny** | Librairies sans Package URL (purl) | Impossible de croiser avec les bases de vulnerabilites |
-| **deny** | Licences copyleft (GPL, AGPL, SSPL) | Incompatibles avec la distribution proprietaire |
+| **deny** | Licences copyleft (GPL, AGPL, SSPL) dans les librairies applicatives | Incompatibles avec la distribution proprietaire (packages OS exclus — attendus dans les images de base) |
 | **deny** | Timestamp SBOM manquant | Impossible de verifier la fraicheur |
 | **deny** | Zero composants | La generation SBOM a probablement echoue |
 | **deny** | Metadonnees d'outil de generation manquantes | Impossible d'auditer comment le SBOM a ete produit |
@@ -253,7 +253,7 @@ Ce pipeline fournit les garanties verifiables suivantes :
 | **Le contenu SBOM est lie cryptographiquement a l'image** | Attestation In-Toto via `cosign attest --type cyclonedx` | Falsification de l'attestation detectable |
 | **Toutes les signatures sont publiquement auditables** | Log de transparence Rekor (pas de `--no-upload`) | Verification independante possible |
 | **Les packages dangereux connus sont bloques** | Regles OPA `deny` (baseline + custom) | `POLICY CHECK FAILED` |
-| **Les licences copyleft sont detectees** | OPA `deny` pour GPL/AGPL/SSPL dans le baseline | `Copyleft license ... incompatible` |
+| **Les licences copyleft sont detectees** | OPA `deny` pour GPL/AGPL/SSPL dans les librairies applicatives (warn pour packages OS) | `Copyleft license ... incompatible` |
 | **Les specs SBOM obsoletes sont rejetees** | OPA `deny` pour CycloneDX < 1.4 | `spec version too old` |
 | **La chaine pipeline est testee end-to-end** | Job `e2e-test` : build → SBOM → scan → policy → sign → attest → verify | La CI echoue sur toute etape cassee |
 | **Les nouvelles CVE sont detectees post-deploiement** | DailyRescan extrait le SBOM depuis l'attestation, rescanne avec les donnees fraiches | Consultatif (non bloquant) |

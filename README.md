@@ -204,7 +204,7 @@ The baseline policies (`policies/sbom-compliance.rego`) include:
 | **deny** | Blocked packages (`event-stream`, `colors`, `faker`...) | Known supply chain attacks or maintainer sabotage |
 | **deny** | Components without version | Cannot track vulnerabilities without version |
 | **deny** | Libraries without Package URL (purl) | Cannot cross-reference in vulnerability databases |
-| **deny** | Copyleft licenses (GPL, AGPL, SSPL) | Incompatible with proprietary distribution |
+| **deny** | Copyleft licenses (GPL, AGPL, SSPL) in app libraries | Incompatible with proprietary distribution (OS packages excluded — expected in base images) |
 | **deny** | Missing SBOM timestamp | Cannot verify freshness |
 | **deny** | Zero components | SBOM generation likely failed |
 | **deny** | Missing generation tool metadata | Cannot audit how SBOM was produced |
@@ -253,7 +253,7 @@ This pipeline provides the following verifiable guarantees:
 | **SBOM content is cryptographically bound to image** | In-Toto attestation via `cosign attest --type cyclonedx` | Attestation tampering detectable |
 | **All signatures are publicly auditable** | Rekor transparency log (no `--no-upload`) | Independent verification possible |
 | **Known-bad packages are blocked** | OPA `deny` rules (baseline + custom) | `POLICY CHECK FAILED` |
-| **Copyleft licenses are caught** | OPA `deny` for GPL/AGPL/SSPL in baseline | `Copyleft license ... incompatible` |
+| **Copyleft licenses are caught** | OPA `deny` for GPL/AGPL/SSPL in app libraries (OS packages warn only) | `Copyleft license ... incompatible` |
 | **Outdated SBOM specs are rejected** | OPA `deny` for CycloneDX < 1.4 | `spec version too old` |
 | **Pipeline chain is tested end-to-end** | `e2e-test` job: build → SBOM → scan → policy → sign → attest → verify | CI fails on any broken step |
 | **New CVEs are caught post-deploy** | DailyRescan extracts SBOM from attestation, rescans with fresh data | Advisory (non-blocking) |

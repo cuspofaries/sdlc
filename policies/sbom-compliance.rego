@@ -35,11 +35,11 @@ blocked_packages := {
 
 # ----- DENY rules (blocking — fail the pipeline) -----
 
-# Deny components without version (except system files)
+# Deny components without version (except system files and OS descriptors)
 deny contains msg if {
 	some component in input.components
 	not component.version
-	component.type != "file"  # Exclude system files which don't have versions
+	not component.type in {"file", "operating-system"}
 	msg := sprintf("Component '%s' (type: %s) has no version specified", [component.name, component.type])
 }
 
@@ -82,12 +82,23 @@ copyleft_licenses := {
 	"EUPL-1.2",
 }
 
+# OS package managers (apk, deb, rpm) commonly ship GPL components in base
+# images — this is standard and expected. Copyleft deny only targets
+# application-level libraries (npm, pip, maven, etc.).
+os_package_prefixes := {"pkg:apk/", "pkg:deb/", "pkg:rpm/"}
+
+is_os_package(component) if {
+	some prefix in os_package_prefixes
+	startswith(component.purl, prefix)
+}
+
 deny contains msg if {
 	some component in input.components
 	some license_entry in component.licenses
 	license_id := license_entry.license.id
 	license_id != null
 	license_id in copyleft_licenses
+	not is_os_package(component)
 	msg := sprintf("Copyleft license '%s' in component '%s@%s' — incompatible with proprietary distribution", [license_id, component.name, component.version])
 }
 
@@ -107,6 +118,17 @@ deny contains msg if {
 }
 
 # ----- WARN rules (advisory — don't fail, but flag) -----
+
+# Warn on copyleft in OS packages (expected but worth tracking)
+warn contains msg if {
+	some component in input.components
+	some license_entry in component.licenses
+	license_id := license_entry.license.id
+	license_id != null
+	license_id in copyleft_licenses
+	is_os_package(component)
+	msg := sprintf("Copyleft license '%s' in OS package '%s@%s' (expected in base images)", [license_id, component.name, component.version])
+}
 
 # Warn on unapproved licenses
 warn contains msg if {
