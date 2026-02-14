@@ -1,24 +1,9 @@
 # SDLC — Unified Supply Chain Security Toolchain
 
 > **Reusable platform** for container image build, SBOM generation, vulnerability scanning, policy enforcement, signing, and monitoring.
-> One workflow replaces `poc-build-sign` + `poc-sbom` with a **shift-left** approach: scan **before** publishing.
+> Shift-left approach: scan **before** publishing. Strict order: **build → analyze → GATE → publish**.
 
 [![Validate Toolchain](https://github.com/cuspofaries/sdlc/actions/workflows/validate-toolchain.yml/badge.svg)](https://github.com/cuspofaries/sdlc/actions/workflows/validate-toolchain.yml)
-
----
-
-## Why this repo exists
-
-Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a supply chain pipeline but suffered from:
-
-| Problem | Impact |
-|---------|--------|
-| **SBOM/digest mismatch** | SBOM generated *after* push could describe a different image |
-| **Tool version drift** | Trivy, Cosign, OPA versions desynchronized across repos |
-| **Scattered maintenance** | Bug fixes required PRs in multiple repos |
-| **Two-job overhead** | Caller repos needed two `workflow_call` jobs chained together |
-
-**SDLC** merges everything into a single reusable workflow with a strict order: **build → analyze → GATE → publish**.
 
 ---
 
