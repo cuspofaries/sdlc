@@ -156,7 +156,8 @@ jobs:
       - name: Install yq (for security exceptions)
         if: ${{ inputs.exceptions-file != '' }}
         run: |
-          curl -sL -o yq "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64"
+          YQ_VERSION=$(grep 'YQ_VERSION:' .sdlc/Taskfile.yml | head -1 | sed "s/.*'\(.*\)'.*/\1/")
+          curl -sL -o yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           chmod +x yq
           sudo install -m 755 yq /usr/local/bin/yq
           rm -f yq
