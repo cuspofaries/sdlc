@@ -1,0 +1,193 @@
+# =============================================================================
+# Daily Vulnerability Rescan (GitHub Actions)
+# =============================================================================
+# Scheduled workflow that rescans the latest attested SBOM from the registry
+# with fresh CVE data. Mirrors the Azure DevOps DailyRescan stage.
+#
+# The SBOM is extracted from the cosign attestation (source of truth),
+# not from a pipeline artifact. This guarantees the SBOM has not been
+# tampered with since the original pipeline run.
+#
+# Usage: consumed automatically by repos that use supply-chain-reusable.yml.
+# Can also be called manually via workflow_dispatch.
+# =============================================================================
+
+name: Daily Vulnerability Rescan
+
+on:
+  schedule:
+    # Daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Image name (without registry prefix)"
+        required: true
+        type: string
+      registry:
+        description: "Container registry"
+        required: false
+        type: string
+        default: "ghcr.io"
+      trivy-severity:
+        description: "Trivy severity filter"
+        required: false
+        type: string
+        default: "HIGH,CRITICAL"
+      dtrack-hostname:
+        description: "Dependency-Track server hostname (skip upload if empty)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      REGISTRY_TOKEN:
+        description: "Token to read from registry (e.g. GITHUB_TOKEN)"
+        required: true
+      DTRACK_API_KEY:
+        description: "Dependency-Track API key"
+        required: false
+  workflow_dispatch:
+    inputs:
+      image-name:
+        description: "Image name to rescan"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+  id-token: write
+
+jobs:
+  rescan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Trivy
+        run: |
+          for i in 1 2 3; do
+            echo "Attempt $i to install trivy..."
+            if curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin; then
+              echo "Trivy installed successfully"
+              break
+            else
+              echo "Attempt $i failed, retrying in 5 seconds..."
+              sleep 5
+            fi
+            if [ $i -eq 3 ]; then
+              echo "Failed to install trivy after 3 attempts"
+              exit 1
+            fi
+          done
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry || 'ghcr.io' }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Resolve latest image digest
+        id: resolve
+        run: |
+          IMAGE_NAME="${{ inputs.image-name || '' }}"
+          REGISTRY="${{ inputs.registry || 'ghcr.io' }}"
+          OWNER="${{ github.repository_owner }}"
+
+          if [ -z "$IMAGE_NAME" ]; then
+            echo "No image-name provided, skipping rescan"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          FULL_IMAGE="${REGISTRY}/${OWNER}/${IMAGE_NAME}"
+
+          # Resolve latest digest via crane (installed with cosign)
+          DIGEST=$(crane digest "${FULL_IMAGE}:latest" 2>/dev/null || true)
+
+          if [ -z "$DIGEST" ]; then
+            # Try without :latest tag (get the most recent manifest)
+            DIGEST=$(crane digest "${FULL_IMAGE}" 2>/dev/null || true)
+          fi
+
+          if [ -z "$DIGEST" ]; then
+            echo "No image found in registry, skipping rescan"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          IMAGE_REF="${FULL_IMAGE}@${DIGEST}"
+          echo "image=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Latest image: ${IMAGE_REF}"
+
+      - name: Extract attested SBOM from registry
+        if: steps.resolve.outputs.skip != 'true'
+        id: extract
+        run: |
+          mkdir -p output/sbom/image output/scans
+
+          IMAGE="${{ steps.resolve.outputs.image }}"
+          echo "Extracting attested SBOM for digest: ${IMAGE}"
+
+          SBOM_EXTRACTED=false
+
+          # Extract SBOM from cosign attestation (cryptographic source of truth)
+          cosign verify-attestation \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "github.com/cuspofaries/" \
+            --type cyclonedx \
+            "${IMAGE}" 2>/dev/null \
+            | jq -r '.payload' | base64 -d \
+            | jq -r '.predicate' \
+            > output/sbom/image/sbom-image-trivy.json && SBOM_EXTRACTED=true || true
+
+          if [ "$SBOM_EXTRACTED" = true ] && [ -s output/sbom/image/sbom-image-trivy.json ]; then
+            echo "SBOM extracted from attestation (cryptographically verified)"
+            echo "source=attestation" >> "$GITHUB_OUTPUT"
+          else
+            echo "No attestation found for this image"
+            echo "source=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rescan SBOM for new vulnerabilities
+        if: steps.resolve.outputs.skip != 'true' && steps.extract.outputs.source == 'attestation'
+        run: |
+          echo "Rescanning SBOM for new vulnerabilities..."
+          echo "Image:       ${{ steps.resolve.outputs.image }}"
+          echo "SBOM source: cosign attestation"
+
+          trivy sbom output/sbom/image/sbom-image-trivy.json \
+            --severity ${{ inputs.trivy-severity || 'HIGH,CRITICAL' }} \
+            --exit-code 0 \
+            --format json \
+            --output output/scans/rescan-trivy.json
+
+          trivy sbom output/sbom/image/sbom-image-trivy.json \
+            --severity ${{ inputs.trivy-severity || 'HIGH,CRITICAL' }} \
+            --exit-code 0
+
+          echo "Rescan complete"
+
+      - name: Upload to Dependency-Track
+        if: steps.resolve.outputs.skip != 'true' && steps.extract.outputs.source == 'attestation' && inputs.dtrack-hostname != ''
+        continue-on-error: true
+        uses: DependencyTrack/gh-upload-sbom@v3
+        with:
+          serverHostname: ${{ inputs.dtrack-hostname }}
+          apiKey: ${{ secrets.DTRACK_API_KEY }}
+          projectName: ${{ inputs.image-name }}
+          projectVersion: "${{ steps.resolve.outputs.image }}-rescan"
+          bomFilename: output/sbom/image/sbom-image-trivy.json
+          autoCreate: true
+
+      - name: Upload rescan artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rescan-outputs
+          path: output/
+          retention-days: 30

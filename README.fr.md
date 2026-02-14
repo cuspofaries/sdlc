@@ -197,6 +197,24 @@ L'evaluation OPA charge les politiques depuis deux sources simultanement :
 
 Les deux sont passees a `opa eval` via des flags `-d` et partagent le meme namespace `package sbom`. Les regles des deux sources sont automatiquement fusionnees — aucune configuration necessaire. Un repo consommateur peut ajouter des regles `deny` pour bloquer des packages supplementaires ou des regles `warn` pour des verifications consultatives sans modifier le baseline.
 
+Les politiques baseline (`policies/sbom-compliance.rego`) incluent :
+
+| Niveau | Regle | Justification |
+|--------|-------|---------------|
+| **deny** | Packages bloques (`event-stream`, `colors`, `faker`...) | Attaques supply chain connues ou sabotage |
+| **deny** | Composants sans version | Impossible de suivre les vulnerabilites sans version |
+| **deny** | Librairies sans Package URL (purl) | Impossible de croiser avec les bases de vulnerabilites |
+| **deny** | Licences copyleft (GPL, AGPL, SSPL) | Incompatibles avec la distribution proprietaire |
+| **deny** | Timestamp SBOM manquant | Impossible de verifier la fraicheur |
+| **deny** | Zero composants | La generation SBOM a probablement echoue |
+| **deny** | Metadonnees d'outil de generation manquantes | Impossible d'auditer comment le SBOM a ete produit |
+| **deny** | Spec CycloneDX < 1.4 | Les specs anciennes manquent de champs requis pour la conformite |
+| **warn** | Licences non approuvees | Signalees pour revue legale, non bloquantes |
+| **warn** | Information de licence manquante | Lacune de tracabilite |
+| **warn** | Nombre eleve de composants (> 500) | Possible surcharge de dependances |
+| **warn** | Packages deprecies/abandonnes | Devraient etre remplaces |
+| **warn** | Metadonnees fournisseur/editeur manquantes | Tracabilite reduite |
+
 ### Pourquoi une installation resiliente des outils
 
 L'etape d'installation de Trivy utilise une **boucle de retry avec backoff** (3 tentatives, 5 secondes de delai entre les echecs). Cela protege contre les echecs reseau transitoires lors des telechargements `curl` dans les environnements CI, ou les runners partages peuvent connaitre des problemes de connectivite intermittents. Un seul echec de telechargement ne fait pas echouer tout le pipeline — seuls 3 echecs consecutifs le font.
@@ -211,7 +229,7 @@ Le pipeline est implemente sur trois plateformes avec le **meme flux logique** :
 | **Azure DevOps** | `azure-pipelines/pipeline.yml` | Multi-stage (BuildAndAnalyze → Publish → DailyRescan) |
 | **Local / tout CI** | `Taskfile.yml` + `scripts/` | Tasks portables, appelees par GH et ADO |
 
-Les trois partagent le meme ordre (build → analyse → gate → publication), les memes outils (Trivy, Cosign, OPA), la meme priorite de signature (KMS > keyless > keypair), et les memes invariants (integrite SBOM, signature sur digest uniquement, verification post-publication). Quand un mecanisme est ajoute a l'un, il est ajoute aux trois.
+Les trois partagent le meme ordre (build → analyse → gate → publication), les memes outils (Trivy, Cosign, OPA), la meme priorite de signature (KMS > keyless > keypair), et les memes invariants (integrite SBOM, signature sur digest uniquement, verification post-publication). Quand un mecanisme est ajoute a l'un, il est ajoute aux trois. Le workflow `validate-toolchain.yml` inclut un **test end-to-end** (job `e2e-test`) qui construit une image de test, genere le SBOM, execute tous les scans et verifications de politique, verifie l'invariant d'integrite SBOM, puis signe, atteste et verifie avec un registry local. Cela detecte les regressions d'integration que des verifications unitaires ne detecteraient pas.
 
 ### Output du workflow pour la consommation downstream
 
@@ -235,6 +253,10 @@ Ce pipeline fournit les garanties verifiables suivantes :
 | **Le contenu SBOM est lie cryptographiquement a l'image** | Attestation In-Toto via `cosign attest --type cyclonedx` | Falsification de l'attestation detectable |
 | **Toutes les signatures sont publiquement auditables** | Log de transparence Rekor (pas de `--no-upload`) | Verification independante possible |
 | **Les packages dangereux connus sont bloques** | Regles OPA `deny` (baseline + custom) | `POLICY CHECK FAILED` |
+| **Les licences copyleft sont detectees** | OPA `deny` pour GPL/AGPL/SSPL dans le baseline | `Copyleft license ... incompatible` |
+| **Les specs SBOM obsoletes sont rejetees** | OPA `deny` pour CycloneDX < 1.4 | `spec version too old` |
+| **La chaine pipeline est testee end-to-end** | Job `e2e-test` : build → SBOM → scan → policy → sign → attest → verify | La CI echoue sur toute etape cassee |
+| **Les nouvelles CVE sont detectees post-deploiement** | DailyRescan extrait le SBOM depuis l'attestation, rescanne avec les donnees fraiches | Consultatif (non bloquant) |
 | **Un echec DTrack ne bloque pas la livraison** | `continue-on-error: true`, lie au digest | L'image signee est livree quoi qu'il arrive |
 
 ---
@@ -412,7 +434,8 @@ Voir [docs/azure-devops-porting.md](docs/azure-devops-porting.md) pour une check
 sdlc/
 ├── .github/workflows/
 │   ├── supply-chain-reusable.yml     ← Workflow unifié (consommé par les repos app)
-│   └── validate-toolchain.yml        ← CI du toolchain lui-même
+│   ├── daily-rescan.yml              ← Rescan planifié avec les dernières données CVE
+│   └── validate-toolchain.yml        ← CI + test end-to-end du pipeline
 ├── azure-pipelines/
 │   └── pipeline.yml                  ← Template Azure DevOps
 ├── scripts/                          ← Scripts shell pour chaque étape du pipeline

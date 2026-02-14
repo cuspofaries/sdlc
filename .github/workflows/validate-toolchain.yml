@@ -1,9 +1,9 @@
 # =============================================================================
 # CI - Validate SDLC Toolchain
 # =============================================================================
-# Ensures scripts, policies, and tool installation work correctly.
-# The actual supply chain pipeline is consumed via supply-chain-reusable.yml
-# by application repos.
+# Ensures scripts, policies, tool installation, and the full pipeline chain
+# work correctly end-to-end. The actual supply chain pipeline is consumed
+# via supply-chain-reusable.yml by application repos.
 # =============================================================================
 
 name: Validate Toolchain
@@ -37,7 +37,7 @@ jobs:
       - name: Verify tools installed
         run: task install:verify
 
-      - name: Validate OPA policies
+      - name: Validate OPA policies (syntax)
         run: |
           opa check policies/sbom-compliance.rego
           echo "Policies valid"
@@ -52,3 +52,169 @@ jobs:
             bash -n "$script"
             echo "OK: $script"
           done
+
+  # =========================================================================
+  # End-to-end pipeline test
+  # =========================================================================
+  # Builds a minimal test image and runs the full local pipeline chain:
+  # build → SBOM generate → scan → policy → verify integrity
+  # Proves every step works together, not just in isolation.
+  # =========================================================================
+  e2e-test:
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Task
+        run: |
+          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+
+      - name: Install SBOM tools
+        run: sudo task install
+
+      - name: Create test Dockerfile
+        run: |
+          mkdir -p test-app
+          cat > test-app/Dockerfile <<'DOCKERFILE'
+          FROM alpine:3.19
+          RUN apk add --no-cache curl jq
+          COPY entrypoint.sh /entrypoint.sh
+          RUN chmod +x /entrypoint.sh
+          CMD ["/entrypoint.sh"]
+          DOCKERFILE
+          cat > test-app/entrypoint.sh <<'SCRIPT'
+          #!/bin/sh
+          echo "SDLC test image"
+          SCRIPT
+
+      - name: Build test image
+        run: task build IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost CONTEXT=./test-app
+
+      - name: Generate SBOM
+        run: task sbom:generate IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost
+
+      - name: Verify SBOM was generated
+        run: |
+          SBOM_FILE="output/sbom/image/sbom-image-trivy.json"
+          if [ ! -s "$SBOM_FILE" ]; then
+            echo "FATAL: SBOM file is empty or missing"
+            exit 1
+          fi
+
+          # Verify it's valid CycloneDX JSON
+          SPEC=$(jq -r '.specVersion' "$SBOM_FILE")
+          FORMAT=$(jq -r '.bomFormat' "$SBOM_FILE")
+          COMPONENTS=$(jq '.components | length' "$SBOM_FILE")
+
+          echo "SBOM format:    $FORMAT"
+          echo "Spec version:   $SPEC"
+          echo "Components:     $COMPONENTS"
+
+          if [ "$FORMAT" != "CycloneDX" ]; then
+            echo "FATAL: Not a CycloneDX SBOM"
+            exit 1
+          fi
+          if [ "$COMPONENTS" -eq 0 ]; then
+            echo "FATAL: SBOM has zero components"
+            exit 1
+          fi
+          echo "SBOM structure verified"
+
+      - name: Verify image-SBOM alignment
+        run: |
+          IMAGE="localhost/sdlc-e2e-test:test"
+          ACTUAL_ID=$(docker inspect --format='{{.Id}}' "$IMAGE")
+          SBOM_ID=$(jq -r '.metadata.component.properties[]? | select(.name == "aquasecurity:trivy:ImageID") | .value' output/sbom/image/sbom-image-trivy.json 2>/dev/null || echo "")
+
+          echo "Image ID (docker): $ACTUAL_ID"
+          echo "Image ID (SBOM):   $SBOM_ID"
+
+          if [ -n "$SBOM_ID" ] && [ "$ACTUAL_ID" != "$SBOM_ID" ]; then
+            echo "FATAL: Image ID mismatch"
+            exit 1
+          fi
+          echo "Image-SBOM alignment verified"
+
+      - name: Record SBOM SHA256
+        id: sbom-hash
+        run: |
+          SHA256=$(sha256sum output/sbom/image/sbom-image-trivy.json | awk '{print $1}')
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "SBOM SHA256: $SHA256"
+
+      - name: Scan vulnerabilities (trivy image)
+        run: task sbom:scan IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost TRIVY_EXIT_CODE=0
+
+      - name: Scan SBOM (trivy sbom — governance)
+        run: task sbom:scan:sbom IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost
+
+      - name: Policy check (OPA)
+        run: task sbom:policy
+
+      - name: Verify SBOM integrity (SHA256 unchanged after scan + policy)
+        run: |
+          EXPECTED="${{ steps.sbom-hash.outputs.sha256 }}"
+          ACTUAL=$(sha256sum output/sbom/image/sbom-image-trivy.json | awk '{print $1}')
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "FATAL: SBOM was modified during pipeline — integrity broken"
+            exit 1
+          fi
+          echo "SBOM integrity invariant verified end-to-end"
+
+      - name: Generate keypair for signing test
+        run: COSIGN_PASSWORD="" cosign generate-key-pair
+
+      - name: Start local registry
+        run: |
+          docker run -d -p 5000:5000 --name registry registry:2
+          sleep 2
+
+      - name: Push to local registry
+        run: |
+          docker tag localhost/sdlc-e2e-test:test localhost:5000/sdlc-e2e-test:test
+          docker push localhost:5000/sdlc-e2e-test:test
+
+      - name: Sign image (keypair)
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/sdlc-e2e-test:test)
+          echo "Signing digest: $DIGEST"
+          cosign sign --yes --key cosign.key "$DIGEST" --allow-insecure-registry
+        env:
+          COSIGN_PASSWORD: ""
+
+      - name: Attest SBOM (keypair)
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/sdlc-e2e-test:test)
+          echo "Attesting SBOM to digest: $DIGEST"
+          cosign attest --yes \
+            --key cosign.key \
+            --predicate output/sbom/image/sbom-image-trivy.json \
+            --type cyclonedx \
+            "$DIGEST" --allow-insecure-registry
+        env:
+          COSIGN_PASSWORD: ""
+
+      - name: Verify signature (keypair)
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/sdlc-e2e-test:test)
+          echo "Verifying signature for digest: $DIGEST"
+          cosign verify --key cosign.pub "$DIGEST" --allow-insecure-registry
+
+      - name: Verify attestation (keypair)
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/sdlc-e2e-test:test)
+          echo "Verifying attestation for digest: $DIGEST"
+          cosign verify-attestation --key cosign.pub --type cyclonedx "$DIGEST" --allow-insecure-registry
+
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-test-outputs
+          path: output/
+          retention-days: 7

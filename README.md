@@ -197,6 +197,24 @@ The OPA evaluation step loads policies from two sources simultaneously:
 
 Both are passed to `opa eval` via `-d` flags and share the same `package sbom` namespace. Rules from both sources are automatically merged — no configuration needed. A consumer repo can add `deny` rules to block additional packages or `warn` rules for advisory checks without modifying the baseline.
 
+The baseline policies (`policies/sbom-compliance.rego`) include:
+
+| Level | Rule | Rationale |
+|-------|------|-----------|
+| **deny** | Blocked packages (`event-stream`, `colors`, `faker`...) | Known supply chain attacks or maintainer sabotage |
+| **deny** | Components without version | Cannot track vulnerabilities without version |
+| **deny** | Libraries without Package URL (purl) | Cannot cross-reference in vulnerability databases |
+| **deny** | Copyleft licenses (GPL, AGPL, SSPL) | Incompatible with proprietary distribution |
+| **deny** | Missing SBOM timestamp | Cannot verify freshness |
+| **deny** | Zero components | SBOM generation likely failed |
+| **deny** | Missing generation tool metadata | Cannot audit how SBOM was produced |
+| **deny** | CycloneDX spec < 1.4 | Older specs lack required fields for compliance |
+| **warn** | Unapproved licenses | Flagged for legal review, not blocking |
+| **warn** | Missing license information | Traceability gap |
+| **warn** | High component count (> 500) | Possible dependency bloat |
+| **warn** | Deprecated/abandoned packages | Should be replaced |
+| **warn** | Missing supplier/publisher metadata | Reduced traceability |
+
 ### Why resilient tool installation
 
 The Trivy installation step uses a **retry loop with backoff** (3 attempts, 5-second delay between failures). This guards against transient network failures during `curl` downloads in CI environments, where shared runners can experience intermittent connectivity issues. A single failed download does not fail the entire pipeline — only 3 consecutive failures do.
@@ -211,7 +229,7 @@ The pipeline is implemented on three platforms with the **same logical flow**:
 | **Azure DevOps** | `azure-pipelines/pipeline.yml` | Multi-stage (BuildAndAnalyze → Publish → DailyRescan) |
 | **Local / any CI** | `Taskfile.yml` + `scripts/` | Portable tasks, called by both GH and ADO |
 
-All three share the same order (build → analyze → gate → publish), the same tools (Trivy, Cosign, OPA), the same signing priority (KMS > keyless > keypair), and the same invariants (SBOM integrity, digest-only signing, post-publish verification). When a mechanism is added to one, it is added to all three.
+All three share the same order (build → analyze → gate → publish), the same tools (Trivy, Cosign, OPA), the same signing priority (KMS > keyless > keypair), and the same invariants (SBOM integrity, digest-only signing, post-publish verification). When a mechanism is added to one, it is added to all three. The `validate-toolchain.yml` workflow includes an **end-to-end test** (`e2e-test` job) that builds a test image, generates SBOM, runs all scans and policy checks, verifies the SBOM integrity invariant, then signs, attests, and verifies using a local registry. This catches integration regressions that unit-level checks would miss.
 
 ### Workflow output for downstream consumption
 
@@ -235,6 +253,10 @@ This pipeline provides the following verifiable guarantees:
 | **SBOM content is cryptographically bound to image** | In-Toto attestation via `cosign attest --type cyclonedx` | Attestation tampering detectable |
 | **All signatures are publicly auditable** | Rekor transparency log (no `--no-upload`) | Independent verification possible |
 | **Known-bad packages are blocked** | OPA `deny` rules (baseline + custom) | `POLICY CHECK FAILED` |
+| **Copyleft licenses are caught** | OPA `deny` for GPL/AGPL/SSPL in baseline | `Copyleft license ... incompatible` |
+| **Outdated SBOM specs are rejected** | OPA `deny` for CycloneDX < 1.4 | `spec version too old` |
+| **Pipeline chain is tested end-to-end** | `e2e-test` job: build → SBOM → scan → policy → sign → attest → verify | CI fails on any broken step |
+| **New CVEs are caught post-deploy** | DailyRescan extracts SBOM from attestation, rescans with fresh data | Advisory (non-blocking) |
 | **DTrack failure doesn't block delivery** | `continue-on-error: true`, linked to digest | Signed image ships regardless |
 
 ---
@@ -412,7 +434,8 @@ See [docs/azure-devops-porting.md](docs/azure-devops-porting.md) for a complete 
 sdlc/
 ├── .github/workflows/
 │   ├── supply-chain-reusable.yml     ← Unified workflow (consumed by app repos)
-│   └── validate-toolchain.yml        ← CI for the toolchain itself
+│   ├── daily-rescan.yml              ← Scheduled rescan with latest CVE data
+│   └── validate-toolchain.yml        ← CI + end-to-end pipeline test
 ├── azure-pipelines/
 │   └── pipeline.yml                  ← Azure DevOps template
 ├── scripts/                          ← Shell scripts for each pipeline step

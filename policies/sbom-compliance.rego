@@ -70,6 +70,42 @@ deny contains msg if {
 	msg := "SBOM contains zero components — generation likely failed"
 }
 
+# Deny copyleft licenses in production builds (strong copyleft only)
+copyleft_licenses := {
+	"GPL-2.0-only",
+	"GPL-2.0-or-later",
+	"GPL-3.0-only",
+	"GPL-3.0-or-later",
+	"AGPL-3.0-only",
+	"AGPL-3.0-or-later",
+	"SSPL-1.0",
+	"EUPL-1.2",
+}
+
+deny contains msg if {
+	some component in input.components
+	some license_entry in component.licenses
+	license_id := license_entry.license.id
+	license_id != null
+	license_id in copyleft_licenses
+	msg := sprintf("Copyleft license '%s' in component '%s@%s' — incompatible with proprietary distribution", [license_id, component.name, component.version])
+}
+
+# Deny SBOM without a tool reference (cannot verify how it was generated)
+deny contains msg if {
+	not input.metadata.tools
+	msg := "SBOM has no metadata.tools — cannot verify generation method"
+}
+
+# Deny SBOM with an outdated spec version (< 1.4 lacks critical fields)
+deny contains msg if {
+	spec := input.specVersion
+	spec != null
+	versions_before_1_4 := {"1.0", "1.1", "1.2", "1.3"}
+	spec in versions_before_1_4
+	msg := sprintf("SBOM spec version '%s' is too old — minimum 1.4 required for supply chain compliance", [spec])
+}
+
 # ----- WARN rules (advisory — don't fail, but flag) -----
 
 # Warn on unapproved licenses
@@ -79,6 +115,7 @@ warn contains msg if {
 	license_id := license_entry.license.id
 	license_id != null
 	not license_id in approved_licenses
+	not license_id in copyleft_licenses  # Already caught by deny
 	msg := sprintf("Unapproved license '%s' in component '%s@%s'", [license_id, component.name, component.version])
 }
 
@@ -94,6 +131,29 @@ warn contains msg if {
 warn contains msg if {
 	count(input.components) > 500
 	msg := sprintf("High component count: %d — consider dependency cleanup", [count(input.components)])
+}
+
+# Warn on components with known deprecated/abandoned status
+deprecated_packages := {
+	"request",       # Deprecated since 2020
+	"nomnom",        # Abandoned
+	"istanbul",      # Replaced by nyc
+	"jade",          # Renamed to pug
+	"github",        # Replaced by @octokit/rest
+	"querystring",   # Node.js built-in URLSearchParams preferred
+}
+
+warn contains msg if {
+	some component in input.components
+	component.name in deprecated_packages
+	msg := sprintf("Deprecated package '%s@%s' — consider replacement", [component.name, component.version])
+}
+
+# Warn if SBOM has no supplier/manufacturer metadata
+warn contains msg if {
+	not input.metadata.component.supplier
+	not input.metadata.component.publisher
+	msg := "SBOM has no supplier/publisher metadata — traceability reduced"
 }
 
 # ----- STATS (informational) -----

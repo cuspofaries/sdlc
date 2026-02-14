@@ -52,8 +52,10 @@ fi
 if [ -n "$IMAGE_DIGEST" ]; then
     echo "   Digest: ${IMAGE_DIGEST}"
 else
-    echo "   ⚠️  Could not resolve digest, using tag reference"
-    IMAGE_DIGEST="$IMAGE"
+    echo "❌ Cannot resolve registry digest for ${IMAGE}"
+    echo "   Make sure the image has been pushed (task push) before attesting."
+    echo "   For local-only work without registry, use: task sbom:sign:blob"
+    exit 1
 fi
 
 SBOM_SHA=$(sha256sum "$SBOM_FILE" | cut -d' ' -f1)
