@@ -471,7 +471,9 @@ sdlc/
 │   └── validate-toolchain.yml        ← CI + test end-to-end du pipeline
 ├── azure-pipelines/
 │   └── pipeline.yml                  ← Template Azure DevOps
-├── scripts/                          ← Scripts shell pour chaque étape du pipeline
+├── scripts/                          ← Scripts shell (Taskfile orchestre, scripts font le travail)
+│   ├── image-sign.sh
+│   ├── image-verify.sh
 │   ├── sbom-attest.sh
 │   ├── sbom-generate-source.sh
 │   ├── sbom-policy.sh
