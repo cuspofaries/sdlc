@@ -152,13 +152,30 @@ stages:
           - script: task push IMAGE_TAG=$(IMAGE_TAG)
             displayName: 'Push Image to Registry'
 
-          # Sign
-          - script: task image:sign IMAGE_TAG=$(IMAGE_TAG)
+          # Resolve registry digest (RepoDigest) after push
+          - script: |
+              IMAGE="$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
+              DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE" 2>/dev/null || true)
+              if [ -z "$DIGEST" ]; then
+                echo "##vso[task.logissue type=warning]Could not resolve RepoDigest, falling back to tag"
+                DIGEST="$IMAGE"
+              fi
+              echo "##vso[task.setvariable variable=IMAGE_DIGEST]$DIGEST"
+              echo "Registry digest: $DIGEST"
+            displayName: 'Get Registry Digest'
+
+          # Sign the registry digest (not the tag)
+          - script: |
+              cosign sign --yes "$(IMAGE_DIGEST)"
             displayName: 'Sign Image Digest'
 
-          # Attest SBOM
-          - script: task sbom:attest IMAGE_TAG=$(IMAGE_TAG)
-            displayName: 'Attest SBOM to Image'
+          # Attest SBOM to the registry digest
+          - script: |
+              cosign attest --yes \
+                --predicate output/sbom/image/sbom-image-trivy.json \
+                --type cyclonedx \
+                "$(IMAGE_DIGEST)"
+            displayName: 'Attest SBOM to Image Digest'
 
           # Upload to Dependency-Track
           - script: |
