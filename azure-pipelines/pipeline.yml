@@ -83,14 +83,29 @@ stages:
           - script: task sbom:generate IMAGE_TAG=$(IMAGE_TAG)
             displayName: 'Generate Image SBOM'
 
+          - script: |
+              if [ -f "security-exceptions.yaml" ]; then
+                echo "── Generating .trivyignore from security exceptions ──"
+                if ! command -v yq &>/dev/null; then
+                  sudo task install:yq
+                fi
+                ./scripts/trivy-exceptions.sh security-exceptions.yaml .trivyignore
+              fi
+            displayName: 'Generate .trivyignore from Exceptions'
+
           - script: task sbom:scan IMAGE_TAG=$(IMAGE_TAG)
             displayName: 'Scan Vulnerabilities (trivy image — security gate)'
 
           - script: task sbom:scan:sbom IMAGE_TAG=$(IMAGE_TAG)
             displayName: 'Scan SBOM (trivy sbom — governance alignment)'
 
-          - script: task sbom:policy
-            displayName: 'OPA Policy Check'
+          - script: |
+              EXCEPTIONS_ARG=""
+              if [ -f "security-exceptions.yaml" ]; then
+                EXCEPTIONS_ARG="security-exceptions.yaml"
+              fi
+              task sbom:policy EXCEPTIONS_FILE="$EXCEPTIONS_ARG"
+            displayName: 'OPA Policy Check (with exceptions)'
 
           - script: ./scripts/sbom-integrity.sh record output/sbom/image/sbom-image-trivy.json "$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
             displayName: 'Record SBOM Integrity Checksums'

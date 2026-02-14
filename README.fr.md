@@ -296,6 +296,52 @@ Les repos consommateurs peuvent pinner a :
 - `@v1.2.0` — version exacte (reproductibilite maximale)
 - `@main` — derniere version de developpement (non recommande pour la production)
 
+### Exceptions de securite (CRA/NIS2 audit-ready)
+
+Quand une vulnerabilite ne peut pas etre corrigee immediatement mais est evaluee comme temporairement acceptable, le pipeline supporte des **exceptions structurees, limitees dans le temps, et auditables** via `security-exceptions.yaml`. Cela repond a la question de l'auditeur : « Comment gerez-vous une vulnerabilite acceptable temporairement ? »
+
+```yaml
+# security-exceptions.yaml (dans le repo consommateur, versionne git)
+exceptions:
+  - id: CVE-2024-32002
+    package: "git"
+    reason: "Non exploitable dans notre contexte (pas de clone submodule)"
+    approved_by: "security@example.com"
+    expires: "2025-06-30"
+    ticket: "JIRA-1234"
+```
+
+**Les 6 champs sont obligatoires.** Pas d'exception permanente — `expires` est requis.
+
+Le mecanisme opere sur **deux gates independants** :
+
+1. **Gate Trivy** : `scripts/trivy-exceptions.sh` lit le YAML et genere `.trivyignore` contenant **uniquement les CVE non expirees**. Quand une exception expire, elle disparait du `.trivyignore` et Trivy la bloque a nouveau automatiquement.
+
+2. **Gate OPA** (defense en profondeur) : `policies/security-exceptions.rego` lit le meme YAML (converti en JSON) et ajoute des regles :
+   - **deny** si une exception a des champs requis manquants ou vides
+   - **deny** si une exception a expire (detecte les fichiers obsoletes meme si Trivy n'a pas detecte)
+   - **warn** si une exception expire dans moins de 7 jours (rappel de renouvellement)
+   - **warn** listant toutes les exceptions actives (visibilite d'audit a chaque run de pipeline)
+
+**Invariant critique** : Le fichier SBOM n'est **jamais modifie**. Les exceptions vivent uniquement au niveau des gates. L'integrite SBOM (SHA256 + ImageID) est intacte.
+
+Le flux de donnees :
+```
+security-exceptions.yaml (repo consommateur, versionne git)
+        |
+        +---> trivy-exceptions.sh ---> .trivyignore (CVEs non expirees)
+        |                                  |
+        |                           trivy image --ignorefile .trivyignore
+        |
+        +---> sbom-policy.sh ---> yq -o json ---> OPA --data exceptions.json
+                                                    |
+                                                    +-- deny : expire, champs manquants
+                                                    +-- warn : expire < 7 jours
+                                                    +-- warn : exceptions actives (audit)
+```
+
+Pour utiliser dans un repo consommateur : creer `security-exceptions.yaml` a la racine du repo et passer `exceptions-file: security-exceptions.yaml` au workflow reutilisable. En local : `task sbom:scan EXCEPTIONS_FILE=security-exceptions.yaml`.
+
 ### Tests unitaires OPA
 
 Les politiques OPA baseline sont couvertes par des tests unitaires dans `policies/sbom-compliance_test.rego` (executes via `task opa:test` ou `opa test policies/ -v`). Les tests verifient les regles deny et warn en utilisant `json.patch`/`json.remove` sur un SBOM valide minimal. Le CI `validate-toolchain.yml` execute ces tests a chaque push.
@@ -322,6 +368,9 @@ Ce pipeline fournit les garanties verifiables suivantes :
 | **Le contenu SBOM est lie cryptographiquement a l'image** | Attestation In-Toto via `cosign attest --type cyclonedx` | Falsification de l'attestation detectable |
 | **Toutes les signatures sont publiquement auditables** | Log de transparence Rekor (pas de `--no-upload`) | Verification independante possible |
 | **La provenance de build est attestee** | Predicat de provenance SLSA atteste au digest de l'image | Builder, source et revision lies cryptographiquement |
+| **Les exceptions de securite expirees sont bloquees** | Gate Trivy (.trivyignore) + OPA deny (defense en profondeur) | `EXPIRED on ...` + Trivy bloque le CVE |
+| **Les exceptions actives sont auditables** | OPA warn liste toutes les exceptions actives a chaque run de pipeline | Piste d'audit dans les logs CI |
+| **Pas d'exception permanente** | Les 6 champs sont obligatoires, `expires` requis | `missing required field` |
 | **Les packages dangereux connus sont bloques** | Regles OPA `deny` (baseline + custom) | `POLICY CHECK FAILED` |
 | **Les licences copyleft sont detectees** | OPA `deny` pour GPL/AGPL/SSPL dans les librairies applicatives (warn pour packages OS) | `Copyleft license ... incompatible` |
 | **Les specs SBOM obsoletes sont rejetees** | OPA `deny` pour CycloneDX < 1.4 | `spec version too old` |
@@ -375,6 +424,7 @@ Pinner a `@v1` pour les mises a jour mineures/patch automatiques, ou `@v1.2.0` p
 | `dtrack-hostname` | Non | `""` | Hostname Dependency-Track (ignoré si vide) |
 | `trivy-severity` | Non | `HIGH,CRITICAL` | Filtre de sévérité pour le scan |
 | `trivy-exit-code` | Non | `"1"` | Code de sortie sur findings (`1` = échec, `0` = avertissement) |
+| `exceptions-file` | Non | `""` | Chemin vers `security-exceptions.yaml` dans le repo appelant (vide = pas d'exceptions) |
 
 ### Politiques custom
 
@@ -444,6 +494,7 @@ task pipeline \
 | `sbom:scan:sbom` | Scanner le SBOM pour les vulnérabilités (trivy sbom — gouvernance, consultatif) |
 | `sbom:policy` | Évaluer le SBOM contre les politiques OPA |
 | `opa:test` | Executer les tests unitaires OPA sur les regles de politique |
+| `exceptions:validate` | Valider le format et l'expiration de security-exceptions.yaml |
 | `push` | Push de l'image vers le registry |
 | `image:sign` | Signer le digest de l'image (cosign) |
 | `image:verify` | Vérifier la signature de l'image |
@@ -520,6 +571,7 @@ sdlc/
 │   ├── sbom-integrity.sh
 │   ├── sbom-generate-source.sh
 │   ├── sbom-policy.sh
+│   ├── trivy-exceptions.sh
 │   ├── sbom-sign.sh
 │   ├── sbom-tamper-test.sh
 │   ├── sbom-upload-dtrack.sh
@@ -527,7 +579,9 @@ sdlc/
 │   └── slsa-provenance.sh
 ├── policies/
 │   ├── sbom-compliance.rego          ← Politiques OPA baseline
-│   └── sbom-compliance_test.rego     ← Tests unitaires OPA
+│   ├── sbom-compliance_test.rego     ← Tests unitaires OPA
+│   ├── security-exceptions.rego      ← Regles de validation des exceptions (CRA/NIS2)
+│   └── security-exceptions_test.rego ← Tests des exceptions
 ├── docs/
 │   ├── azure-devops-porting.md       ← Checklist de portage Azure DevOps
 │   ├── dependency-track.md

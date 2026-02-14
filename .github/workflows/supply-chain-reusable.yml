@@ -57,6 +57,11 @@ on:
         required: false
         type: string
         default: "1"
+      exceptions-file:
+        description: "Path to security-exceptions.yaml in caller repo (empty = no exceptions)"
+        required: false
+        type: string
+        default: ""
     secrets:
       REGISTRY_TOKEN:
         description: "Token to push image to registry (e.g. GITHUB_TOKEN)"
@@ -148,6 +153,14 @@ jobs:
           sudo install -m 755 opa /usr/local/bin/opa
           rm -f opa
 
+      - name: Install yq (for security exceptions)
+        if: ${{ inputs.exceptions-file != '' }}
+        run: |
+          curl -sL -o yq "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64"
+          chmod +x yq
+          sudo install -m 755 yq /usr/local/bin/yq
+          rm -f yq
+
       - name: Generate SBOM (trivy image → CycloneDX)
         run: |
           mkdir -p output/sbom/image
@@ -158,14 +171,29 @@ jobs:
       - name: Record SBOM integrity + verify image alignment
         run: .sdlc/scripts/sbom-integrity.sh record output/sbom/image/sbom-image-trivy.json "${{ steps.image-ref.outputs.image }}"
 
+      - name: Generate .trivyignore from security exceptions
+        if: ${{ inputs.exceptions-file != '' }}
+        run: |
+          if [ -f "${{ inputs.exceptions-file }}" ]; then
+            .sdlc/scripts/trivy-exceptions.sh "${{ inputs.exceptions-file }}" .trivyignore
+          else
+            echo "Exceptions file not found: ${{ inputs.exceptions-file }}"
+          fi
+
       - name: Scan vulnerabilities (trivy image — security gate)
         run: |
           mkdir -p output/scans
+          IGNOREFILE_FLAG=""
+          if [ -f ".trivyignore" ]; then
+            IGNOREFILE_FLAG="--ignorefile .trivyignore"
+            echo "Using .trivyignore with $(wc -l < .trivyignore) entries"
+          fi
           trivy image "${{ steps.image-ref.outputs.image }}" \
             --severity ${{ inputs.trivy-severity }} \
             --exit-code ${{ inputs.trivy-exit-code }} \
             --format json \
-            --output output/scans/scan-trivy.json
+            --output output/scans/scan-trivy.json \
+            $IGNOREFILE_FLAG
           echo "Vulnerability scan passed"
 
       - name: Scan SBOM (trivy sbom — governance alignment)
@@ -177,7 +205,7 @@ jobs:
             --output output/scans/scan-sbom-trivy.json
           echo "SBOM scan complete (advisory)"
 
-      - name: Policy check (OPA — baseline + custom)
+      - name: Policy check (OPA — baseline + custom + exceptions)
         run: |
           # Build OPA data flags
           OPA_DATA_FLAGS="-d .sdlc/policies/"
@@ -186,6 +214,17 @@ jobs:
           if [ -d "policies" ]; then
             echo "Custom policies found in caller repo"
             OPA_DATA_FLAGS="$OPA_DATA_FLAGS -d policies/"
+          fi
+
+          # Convert exceptions YAML to JSON and add as OPA data
+          EXCEPTIONS_JSON=""
+          EXCEPTIONS_FILE="${{ inputs.exceptions-file }}"
+          if [ -n "$EXCEPTIONS_FILE" ] && [ -f "$EXCEPTIONS_FILE" ]; then
+            EXCEPTIONS_JSON=$(mktemp)
+            yq -o json "$EXCEPTIONS_FILE" > "$EXCEPTIONS_JSON"
+            OPA_DATA_FLAGS="$OPA_DATA_FLAGS --data $EXCEPTIONS_JSON"
+            TOTAL_EXC=$(yq '.exceptions | length' "$EXCEPTIONS_FILE" 2>/dev/null || echo "0")
+            echo "Security exceptions: $EXCEPTIONS_FILE ($TOTAL_EXC entries)"
           fi
 
           echo "Evaluating SBOM against policies..."
@@ -222,6 +261,9 @@ jobs:
               echo "  - ${msg}"
             done
           fi
+
+          # Cleanup
+          [ -n "$EXCEPTIONS_JSON" ] && rm -f "$EXCEPTIONS_JSON"
 
           # GATE: fail if deny rules triggered
           if [ "$DENY_COUNT" -gt 0 ]; then

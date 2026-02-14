@@ -42,6 +42,9 @@ vars:
   # -- Policy --
   EXTRA_POLICIES: '{{.EXTRA_POLICIES | default ""}}'
 
+  # -- Security Exceptions --
+  EXCEPTIONS_FILE: '{{.EXCEPTIONS_FILE | default "security-exceptions.yaml"}}'
+
   # -- Dependency-Track --
   DTRACK_URL: '{{.DTRACK_URL | default "http://localhost:8081"}}'
   DTRACK_API_KEY: '{{.DTRACK_API_KEY | default ""}}'
@@ -78,6 +81,7 @@ tasks:
       - task: install:cdxgen
       - task: install:opa
       - task: install:oras
+      - task: install:yq
       - echo "✅ All tools installed"
       - task: install:verify
 
@@ -145,6 +149,18 @@ tasks:
     status:
       - which oras
 
+  install:yq:
+    desc: "Install yq (YAML processor for security exceptions)"
+    cmds:
+      - |
+        curl -sL -o yq "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64"
+        chmod +x yq
+        sudo install -m 755 yq /usr/local/bin/yq
+        rm -f yq
+        echo "✅ yq installed"
+    status:
+      - which yq
+
   install:verify:
     desc: "Verify all tools are installed"
     cmds:
@@ -155,6 +171,7 @@ tasks:
         echo -n "cdxgen: " && cdxgen --version 2>/dev/null || echo "❌ NOT INSTALLED"
         echo -n "opa:    " && opa version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
         echo -n "oras:   " && oras version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
+        echo -n "yq:     " && yq --version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
 
   # ==========================================================================
   # PHASE 1 - BUILD
@@ -203,15 +220,23 @@ tasks:
     cmds:
       - mkdir -p {{.SCAN_DIR}}
       - |
+        IGNOREFILE_FLAG=""
+        if [ -f "{{.EXCEPTIONS_FILE}}" ]; then
+          echo "── Generating .trivyignore from security exceptions ──"
+          ./scripts/trivy-exceptions.sh "{{.EXCEPTIONS_FILE}}" .trivyignore
+          IGNOREFILE_FLAG="--ignorefile .trivyignore"
+          echo ""
+        fi
         trivy image {{.IMAGE}} \
           --severity {{.TRIVY_SEVERITY}} \
           --exit-code {{.TRIVY_EXIT_CODE}} \
           --format json \
-          --output {{.SCAN_DIR}}/scan-trivy.json
-      - |
+          --output {{.SCAN_DIR}}/scan-trivy.json \
+          $IGNOREFILE_FLAG
         trivy image {{.IMAGE}} \
           --severity {{.TRIVY_SEVERITY}} \
-          --exit-code {{.TRIVY_EXIT_CODE}}
+          --exit-code {{.TRIVY_EXIT_CODE}} \
+          $IGNOREFILE_FLAG
       - echo "✅ Vulnerability scan complete → {{.SCAN_DIR}}/scan-trivy.json"
 
   sbom:scan:sbom:
@@ -236,10 +261,39 @@ tasks:
       - opa test policies/ -v
       - echo "✅ OPA policy tests passed"
 
+  exceptions:validate:
+    desc: "Validate security-exceptions.yaml (format + expiry)"
+    cmds:
+      - |
+        if [ ! -f "{{.EXCEPTIONS_FILE}}" ]; then
+          echo "ℹ️  No exceptions file at {{.EXCEPTIONS_FILE}} — nothing to validate"
+          exit 0
+        fi
+        if ! command -v yq &>/dev/null; then
+          echo "❌ yq is not installed. Run: task install:yq" >&2
+          exit 1
+        fi
+        echo "── Validating {{.EXCEPTIONS_FILE}} ──"
+        EXCEPTIONS_JSON=$(mktemp)
+        yq -o json "{{.EXCEPTIONS_FILE}}" > "$EXCEPTIONS_JSON"
+        opa eval \
+          -d ./policies/ \
+          --data "$EXCEPTIONS_JSON" \
+          -i /dev/null \
+          'data.sbom.deny' \
+          --format raw
+        rm -f "$EXCEPTIONS_JSON"
+        echo "✅ Exceptions validation complete"
+
   sbom:policy:
     desc: "Evaluate SBOM against OPA policies (baseline + optional custom)"
     cmds:
-      - ./scripts/sbom-policy.sh {{.SBOM_DIR}}/image/sbom-image-trivy.json ./policies {{.EXTRA_POLICIES}}
+      - |
+        EXCEPTIONS_ARG=""
+        if [ -f "{{.EXCEPTIONS_FILE}}" ]; then
+          EXCEPTIONS_ARG="{{.EXCEPTIONS_FILE}}"
+        fi
+        ./scripts/sbom-policy.sh {{.SBOM_DIR}}/image/sbom-image-trivy.json ./policies "{{.EXTRA_POLICIES}}" "$EXCEPTIONS_ARG"
 
   # ==========================================================================
   # PHASE 3 - PUBLISH

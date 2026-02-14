@@ -296,6 +296,52 @@ Consumer repos can pin to:
 - `@v1.2.0` — exact version (maximum reproducibility)
 - `@main` — latest development (not recommended for production)
 
+### Security exceptions (CRA/NIS2 audit-ready)
+
+When a vulnerability cannot be immediately fixed but is assessed as temporarily acceptable, the pipeline supports **structured, time-bound, auditable exceptions** via `security-exceptions.yaml`. This answers the auditor question: "How do you handle a temporarily acceptable vulnerability?"
+
+```yaml
+# security-exceptions.yaml (in the consumer repo, git-versioned)
+exceptions:
+  - id: CVE-2024-32002
+    package: "git"
+    reason: "Not exploitable in our context (no submodule clone)"
+    approved_by: "security@example.com"
+    expires: "2025-06-30"
+    ticket: "JIRA-1234"
+```
+
+**All 6 fields are mandatory.** No permanent exceptions — `expires` is required.
+
+The mechanism operates at **two independent gates**:
+
+1. **Trivy gate**: `scripts/trivy-exceptions.sh` reads the YAML and generates `.trivyignore` containing **only non-expired** CVE IDs. When an exception expires, it disappears from `.trivyignore` and Trivy blocks it again automatically.
+
+2. **OPA gate** (defense in depth): `policies/security-exceptions.rego` reads the same YAML (converted to JSON) and adds rules:
+   - **deny** if an exception has missing or empty required fields
+   - **deny** if an exception has expired (catches stale files even if Trivy missed)
+   - **warn** if an exception expires within 7 days (renewal reminder)
+   - **warn** listing all active exceptions (audit visibility in every pipeline run)
+
+**Critical invariant**: The SBOM file is **never modified**. Exceptions live at the gate level only. SBOM integrity (SHA256 + ImageID) is untouched.
+
+The data flow:
+```
+security-exceptions.yaml (consumer repo, git-versioned)
+        |
+        +---> trivy-exceptions.sh ---> .trivyignore (non-expired CVEs)
+        |                                  |
+        |                           trivy image --ignorefile .trivyignore
+        |
+        +---> sbom-policy.sh ---> yq -o json ---> OPA --data exceptions.json
+                                                    |
+                                                    +-- deny: expired, missing fields
+                                                    +-- warn: expiring < 7 days
+                                                    +-- warn: active exceptions (audit)
+```
+
+To use in a consumer repo: create `security-exceptions.yaml` at the repo root and pass `exceptions-file: security-exceptions.yaml` to the reusable workflow. For local use: `task sbom:scan EXCEPTIONS_FILE=security-exceptions.yaml`.
+
 ### OPA unit tests
 
 Baseline OPA policies are covered by unit tests in `policies/sbom-compliance_test.rego` (run via `task opa:test` or `opa test policies/ -v`). Tests verify both deny and warn rules using `json.patch`/`json.remove` on a minimal valid SBOM fixture. The `validate-toolchain.yml` CI runs these tests on every push.
@@ -322,6 +368,9 @@ This pipeline provides the following verifiable guarantees:
 | **SBOM content is cryptographically bound to image** | In-Toto attestation via `cosign attest --type cyclonedx` | Attestation tampering detectable |
 | **All signatures are publicly auditable** | Rekor transparency log (no `--no-upload`) | Independent verification possible |
 | **Build provenance is attested** | SLSA provenance predicate attested to image digest | Builder, source, and revision are cryptographically bound |
+| **Expired security exceptions are blocked** | Trivy gate (.trivyignore) + OPA deny (defense in depth) | `EXPIRED on ...` + Trivy blocks CVE |
+| **Active exceptions are auditable** | OPA warn lists all active exceptions in every pipeline run | Audit trail in CI logs |
+| **No permanent exceptions** | All 6 fields mandatory, `expires` required | `missing required field` |
 | **Known-bad packages are blocked** | OPA `deny` rules (baseline + custom) | `POLICY CHECK FAILED` |
 | **Copyleft licenses are caught** | OPA `deny` for GPL/AGPL/SSPL in app libraries (OS packages warn only) | `Copyleft license ... incompatible` |
 | **Outdated SBOM specs are rejected** | OPA `deny` for CycloneDX < 1.4 | `spec version too old` |
@@ -375,6 +424,7 @@ Pin to `@v1` for automatic minor/patch updates, or `@v1.2.0` for exact version p
 | `dtrack-hostname` | No | `""` | Dependency-Track hostname (skip if empty) |
 | `trivy-severity` | No | `HIGH,CRITICAL` | Severity filter for vulnerability scan |
 | `trivy-exit-code` | No | `"1"` | Exit code on findings (`1` = fail, `0` = warn) |
+| `exceptions-file` | No | `""` | Path to `security-exceptions.yaml` in caller repo (empty = no exceptions) |
 
 ### Custom policies
 
@@ -444,6 +494,7 @@ task pipeline \
 | `sbom:scan:sbom` | Scan SBOM for vulnerabilities (trivy sbom — governance, advisory) |
 | `sbom:policy` | Evaluate SBOM against OPA policies |
 | `opa:test` | Run OPA unit tests on policy rules |
+| `exceptions:validate` | Validate security-exceptions.yaml format and expiry |
 | `push` | Push image to registry |
 | `image:sign` | Sign image digest (cosign) |
 | `image:verify` | Verify image signature |
@@ -520,6 +571,7 @@ sdlc/
 │   ├── sbom-integrity.sh
 │   ├── sbom-generate-source.sh
 │   ├── sbom-policy.sh
+│   ├── trivy-exceptions.sh
 │   ├── sbom-sign.sh
 │   ├── sbom-tamper-test.sh
 │   ├── sbom-upload-dtrack.sh
@@ -527,7 +579,9 @@ sdlc/
 │   └── slsa-provenance.sh
 ├── policies/
 │   ├── sbom-compliance.rego          ← Baseline OPA policies
-│   └── sbom-compliance_test.rego     ← OPA unit tests
+│   ├── sbom-compliance_test.rego     ← OPA unit tests
+│   ├── security-exceptions.rego      ← Exception validation rules (CRA/NIS2)
+│   └── security-exceptions_test.rego ← Exception tests
 ├── docs/
 │   ├── azure-devops-porting.md       ← Porting checklist for Azure DevOps
 │   ├── dependency-track.md

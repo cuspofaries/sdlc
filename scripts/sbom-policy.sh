@@ -2,16 +2,20 @@
 # =============================================================================
 # sbom-policy.sh - Evaluate SBOM against OPA compliance policies
 #
-# Usage: ./scripts/sbom-policy.sh <sbom-file> <policies-dir> [extra-policies-dir]
+# Usage: ./scripts/sbom-policy.sh <sbom-file> <policies-dir> [extra-policies-dir] [exceptions-file]
 #
 # The extra-policies-dir (optional) allows consumer repos to add their own
 # rules on top of the baseline policies. Both sets are merged by OPA.
+#
+# The exceptions-file (optional) is a YAML file (security-exceptions.yaml)
+# that gets converted to JSON and passed to OPA as data.exceptions.
 # =============================================================================
 set -euo pipefail
 
-SBOM_FILE="${1:?Usage: $0 <sbom-file> <policies-dir> [extra-policies-dir]}"
+SBOM_FILE="${1:?Usage: $0 <sbom-file> <policies-dir> [extra-policies-dir] [exceptions-file]}"
 POLICIES_DIR="${2:-./policies}"
 EXTRA_POLICIES_DIR="${3:-}"
+EXCEPTIONS_FILE="${4:-}"
 
 # Build OPA data flags (baseline + optional custom policies)
 OPA_DATA_FLAGS="-d ${POLICIES_DIR}/"
@@ -19,11 +23,31 @@ if [ -n "$EXTRA_POLICIES_DIR" ] && [ -d "$EXTRA_POLICIES_DIR" ]; then
     OPA_DATA_FLAGS="$OPA_DATA_FLAGS -d ${EXTRA_POLICIES_DIR}/"
 fi
 
+# Convert exceptions YAML to JSON and add as OPA data
+EXCEPTIONS_JSON=""
+if [ -n "$EXCEPTIONS_FILE" ] && [ -f "$EXCEPTIONS_FILE" ]; then
+    if ! command -v yq &>/dev/null; then
+        echo "❌ yq is not installed (needed for exceptions). Run: task install:yq" >&2
+        exit 1
+    fi
+    EXCEPTIONS_JSON=$(mktemp)
+    yq -o json "$EXCEPTIONS_FILE" > "$EXCEPTIONS_JSON"
+    OPA_DATA_FLAGS="$OPA_DATA_FLAGS --data ${EXCEPTIONS_JSON}"
+fi
+
+# Cleanup temp file on exit
+cleanup() { [ -n "$EXCEPTIONS_JSON" ] && rm -f "$EXCEPTIONS_JSON"; }
+trap cleanup EXIT
+
 echo "📋 Evaluating SBOM against policies..."
 echo "   SBOM:     ${SBOM_FILE}"
 echo "   Baseline: ${POLICIES_DIR}/"
 if [ -n "$EXTRA_POLICIES_DIR" ] && [ -d "$EXTRA_POLICIES_DIR" ]; then
     echo "   Custom:   ${EXTRA_POLICIES_DIR}/"
+fi
+if [ -n "$EXCEPTIONS_FILE" ] && [ -f "$EXCEPTIONS_FILE" ]; then
+    TOTAL_EXC=$(yq '.exceptions | length' "$EXCEPTIONS_FILE" 2>/dev/null || echo "0")
+    echo "   Exceptions: ${EXCEPTIONS_FILE} (${TOTAL_EXC} entries)"
 fi
 echo ""
 

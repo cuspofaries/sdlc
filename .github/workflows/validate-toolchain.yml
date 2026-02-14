@@ -40,10 +40,46 @@ jobs:
       - name: Validate OPA policies (syntax)
         run: |
           opa check policies/sbom-compliance.rego
+          opa check policies/security-exceptions.rego
           echo "Policies valid"
 
       - name: Run OPA unit tests
         run: task opa:test
+
+      - name: Validate security exceptions (OPA deny on expired)
+        run: |
+          # Create test exceptions YAML
+          cat > /tmp/test-exceptions.yaml <<'YAML'
+          exceptions:
+            - id: CVE-2020-99999
+              package: old-lib
+              reason: "Expired for test"
+              approved_by: "test@example.com"
+              expires: "2020-01-01"
+              ticket: "TEST-001"
+          YAML
+
+          # Install yq
+          sudo task install:yq
+
+          # Convert to JSON and test OPA deny fires on expired exception
+          EXCEPTIONS_JSON=$(mktemp)
+          yq -o json /tmp/test-exceptions.yaml > "$EXCEPTIONS_JSON"
+          DENY_RESULT=$(opa eval \
+            -d policies/ \
+            --data "$EXCEPTIONS_JSON" \
+            -i /dev/null \
+            'data.sbom.deny' \
+            --format raw 2>/dev/null || echo "[]")
+          rm -f "$EXCEPTIONS_JSON"
+
+          echo "Deny result: $DENY_RESULT"
+          if echo "$DENY_RESULT" | grep -q "EXPIRED"; then
+            echo "PASS: OPA correctly denies expired exception"
+          else
+            echo "FAIL: OPA did not deny expired exception"
+            exit 1
+          fi
 
       - name: Validate scripts are executable
         run: |
@@ -135,6 +171,25 @@ jobs:
           printf 'FROM alpine:latest\nRUN apk add --no-cache curl jq\nCMD ["echo", "SDLC test image"]\n' > app/Dockerfile
           cat app/Dockerfile
 
+      - name: Create test security-exceptions.yaml
+        run: |
+          cat > security-exceptions.yaml <<'EOF'
+          exceptions:
+            - id: CVE-2099-00001
+              package: test-pkg
+              reason: "Not exploitable in our context (e2e test)"
+              approved_by: "ci@example.com"
+              expires: "2099-12-31"
+              ticket: "TEST-001"
+            - id: CVE-2020-00001
+              package: old-pkg
+              reason: "Was mitigated (expired for testing)"
+              approved_by: "ci@example.com"
+              expires: "2020-01-01"
+              ticket: "TEST-002"
+          EOF
+          echo "Test exceptions file created"
+
       # --- PHASE 1: BUILD (same task as prod) ---
       - name: "Phase 1: Build"
         run: task build IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
@@ -159,6 +214,13 @@ jobs:
       - name: "Assert: Record SBOM integrity + image alignment"
         run: ./scripts/sbom-integrity.sh record output/sbom/image/sbom-image-trivy.json localhost:5000/sdlc-e2e-test:test
 
+      - name: "Phase 2: Generate .trivyignore from exceptions"
+        run: |
+          if [ -f "security-exceptions.yaml" ]; then
+            ./scripts/trivy-exceptions.sh security-exceptions.yaml .trivyignore
+            echo "Active exceptions applied to .trivyignore"
+          fi
+
       # No TRIVY_EXIT_CODE override — uses default "1" (fail-closed).
       # If alpine:latest has HIGH/CRITICAL CVEs, this fails. Fix the
       # base image, don't relax the test.
@@ -168,8 +230,52 @@ jobs:
       - name: "Phase 2: Scan SBOM (trivy sbom — governance)"
         run: task sbom:scan:sbom IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
-      - name: "Phase 2: Policy check (OPA)"
-        run: task sbom:policy
+      - name: "Phase 2: Policy check (OPA + exceptions)"
+        run: |
+          # The expired exception (CVE-2020-00001) should trigger a deny,
+          # but we need to capture it without failing the step.
+          # Run sbom-policy.sh directly to check for expected deny.
+          EXCEPTIONS_JSON=$(mktemp)
+          yq -o json security-exceptions.yaml > "$EXCEPTIONS_JSON"
+          DENY_RESULT=$(opa eval \
+            -d policies/ \
+            --data "$EXCEPTIONS_JSON" \
+            -i output/sbom/image/sbom-image-trivy.json \
+            'data.sbom.deny' \
+            --format raw 2>/dev/null || echo "[]")
+          rm -f "$EXCEPTIONS_JSON"
+
+          echo "Deny result: $DENY_RESULT"
+
+          # Assert: expired exception is detected
+          if echo "$DENY_RESULT" | grep -q "EXPIRED"; then
+            echo "PASS: OPA correctly flags expired exception CVE-2020-00001"
+          else
+            echo "FAIL: OPA did not flag expired exception"
+            exit 1
+          fi
+
+          # Assert: active exception shows as warning
+          EXCEPTIONS_JSON=$(mktemp)
+          yq -o json security-exceptions.yaml > "$EXCEPTIONS_JSON"
+          WARN_RESULT=$(opa eval \
+            -d policies/ \
+            --data "$EXCEPTIONS_JSON" \
+            -i output/sbom/image/sbom-image-trivy.json \
+            'data.sbom.warn' \
+            --format raw 2>/dev/null || echo "[]")
+          rm -f "$EXCEPTIONS_JSON"
+
+          echo "Warn result: $WARN_RESULT"
+          if echo "$WARN_RESULT" | grep -q "Active security exception"; then
+            echo "PASS: OPA lists active exception CVE-2099-00001"
+          else
+            echo "FAIL: OPA did not list active exception"
+            exit 1
+          fi
+
+          # Now run the real policy (without exceptions, since expired would block)
+          task sbom:policy
 
       - name: "Assert: SBOM integrity (SHA256 unchanged after scan + policy)"
         run: ./scripts/sbom-integrity.sh verify output/sbom/image/sbom-image-trivy.json localhost:5000/sdlc-e2e-test:test
