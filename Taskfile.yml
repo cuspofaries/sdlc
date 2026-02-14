@@ -277,7 +277,7 @@ tasks:
           echo "Mode: Keyless (GitHub OIDC)"
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp "github.com/" \
+            --certificate-identity-regexp "github.com/cuspofaries/" \
             "{{.IMAGE}}"
         fi
       - echo "✅ Image signature verified"
@@ -329,13 +329,13 @@ tasks:
           echo "── Verify signature (keyless) ──"
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp "github.com/" \
+            --certificate-identity-regexp "github.com/cuspofaries/" \
             "{{.IMAGE}}" 2>&1 | head -5
           echo ""
           echo "── Verify attestation (keyless) ──"
           cosign verify-attestation \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp "github.com/" \
+            --certificate-identity-regexp "github.com/cuspofaries/" \
             --type cyclonedx \
             "{{.IMAGE}}" > /dev/null 2>&1
         fi

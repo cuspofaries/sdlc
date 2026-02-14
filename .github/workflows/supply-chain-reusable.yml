@@ -318,7 +318,7 @@ jobs:
         run: |
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp "github.com/" \
+            --certificate-identity-regexp "github.com/cuspofaries/" \
             "${{ steps.digest.outputs.image }}" 2>&1 | head -5
           echo "Signature verified in registry"
 
@@ -326,7 +326,7 @@ jobs:
         run: |
           cosign verify-attestation \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp "github.com/" \
+            --certificate-identity-regexp "github.com/cuspofaries/" \
             --type cyclonedx \
             "${{ steps.digest.outputs.image }}" > /dev/null 2>&1
           echo "SBOM attestation verified in registry"

@@ -316,7 +316,7 @@ stages:
                 echo "Verifying signature (keyless)..."
                 cosign verify \
                   --certificate-oidc-issuer https://vstoken.dev.azure.com \
-                  --certificate-identity-regexp ".*" \
+                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/" \
                   "$(IMAGE_DIGEST)" 2>&1 | head -5
               fi
               echo "Signature verified in registry"
@@ -338,7 +338,7 @@ stages:
                 echo "Verifying attestation (keyless)..."
                 cosign verify-attestation \
                   --certificate-oidc-issuer https://vstoken.dev.azure.com \
-                  --certificate-identity-regexp ".*" \
+                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/" \
                   --type cyclonedx \
                   "$(IMAGE_DIGEST)" > /dev/null 2>&1
               fi
