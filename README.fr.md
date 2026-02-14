@@ -231,16 +231,19 @@ Le pipeline est implemente sur trois plateformes avec le **meme flux logique** :
 
 Les trois partagent le meme ordre (build → analyse → gate → publication), les memes outils (Trivy, Cosign, OPA), la meme priorite de signature (KMS > keyless > keypair), et les memes invariants (integrite SBOM, signature sur digest uniquement, verification post-publication). Quand un mecanisme est ajoute a l'un, il est ajoute aux trois. Le workflow `validate-toolchain.yml` inclut un **test end-to-end** (job `e2e-test`) qui construit une image de test, genere le SBOM, execute tous les scans et verifications de politique, verifie l'invariant d'integrite SBOM, puis signe, atteste et verifie avec un registry local. Cela detecte les regressions d'integration que des verifications unitaires ne detecteraient pas.
 
-**Test e2e : relaxations connues vs production** — chacune est documentee inline dans le workflow avec sa justification et ou le comportement reel est teste :
+**Philosophie e2e : aussi strict que la prod, fail-closed.** Le e2e execute les memes tasks Taskfile avec les memes defaults — pas de `TRIVY_EXIT_CODE=0`, pas de `--ignore-unfixed`, pas de regexp d'identite relachee. Si l'image de test a des CVEs HIGH/CRITICAL, le e2e echoue ; on corrige l'image de base, on ne relaxe pas le test.
 
-| Relaxation | Raison | Ou le comportement reel est teste |
-|------------|--------|-----------------------------------|
-| `TRIVY_EXIT_CODE=0` | L'image de test (alpine) a des CVEs connues | Logique de gate testee par les repos consommateurs via le workflow reutilisable |
-| Signature par keypair (pas keyless) | Keyless necessite une identite OIDC depuis un vrai registry | Repos consommateurs utilisant `supply-chain-reusable.yml` avec de vrais registries |
-| `registry:2` local (pas de TLS/auth/referrers) | Teste la mecanique cosign store/retrieve | Repos consommateurs poussant vers ghcr.io / ACR |
+Relaxations connues (inherentes au CI, chacune documentee inline dans le workflow) :
+
+| Relaxation | Pourquoi inevitable | Ou le comportement reel est teste |
+|------------|---------------------|-----------------------------------|
+| Signature par keypair (pas keyless) | Keyless necessite OIDC depuis un vrai registry ; les tasks utilisent le meme fallback KMS > keyless > keypair | Repos consommateurs utilisant `supply-chain-reusable.yml` avec de vrais registries |
+| `registry:2` local + `COSIGN_ALLOW_INSECURE_REGISTRY` | Pas de TLS sans certificats externes en CI ; c'est le seul override d'env | Repos consommateurs poussant vers ghcr.io / ACR |
 | Runner unique (pas de save/load) | Le pattern multi-stage ADO est specifique a la plateforme | `azure-pipelines/pipeline.yml` avec docker save/load + re-verification ImageID |
 
-**Regle : chaque relaxation doit documenter POURQUOI et OU le comportement reel est teste. Si on ne peut pas repondre aux deux, on ne relaxe pas.**
+Non relaxe (identique a la prod) : `TRIVY_EXIT_CODE=1`, `TRIVY_SEVERITY=HIGH,CRITICAL`, regles OPA deny, resolution digest via les tasks, memes scripts, memes policies.
+
+**Regle : chaque relaxation doit repondre a POURQUOI elle est inevitable et OU le comportement reel est teste. Sans les deux reponses, on ne relaxe pas.**
 
 ### Output du workflow pour la consommation downstream
 

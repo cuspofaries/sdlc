@@ -56,39 +56,53 @@ jobs:
   # =========================================================================
   # End-to-end pipeline test
   # =========================================================================
-  # Builds a minimal test image and runs the full local pipeline chain:
-  # build → SBOM generate → scan → policy → verify integrity → sign → attest → verify
+  # Executes the SAME Taskfile tasks as production, in the SAME order,
+  # with the SAME defaults (fail-closed). No TRIVY_EXIT_CODE=0, no
+  # --ignore-unfixed, no relaxed identity regexp.
   #
-  # WHAT THIS TESTS:
-  #   - Tool integration (trivy, cosign, opa work together)
-  #   - SBOM structure and image-SBOM alignment (ImageID cross-check)
-  #   - SBOM integrity invariant (SHA256 unchanged across steps)
-  #   - Digest-only signing (resolved after push, never a tag)
-  #   - Full sign → attest → verify round-trip
-  #   - OPA policy evaluation (deny + warn rules)
+  # PRINCIPLE: the e2e must be at least as strict as prod.
+  # If a scan/policy fails here, it would fail in prod too — fix the
+  # test image, don't relax the test.
   #
-  # KNOWN RELAXATIONS vs PRODUCTION (each justified):
-  #   1. TRIVY_EXIT_CODE=0 — alpine:3.19 has known CVEs; the test validates
-  #      that trivy runs and produces output, not that the image is vuln-free.
-  #      The gate logic itself (exit code propagation) is tested by the
-  #      reusable workflow's own consumers.
-  #   2. Keypair signing (not keyless) — keyless requires OIDC identity from
-  #      a real registry push. Keypair tests the cosign sign/verify mechanics.
-  #      Keyless identity verification is tested by consumer repos calling
-  #      supply-chain-reusable.yml with real registries.
-  #   3. Local registry (registry:2) — no OCI referrers API, no TLS, no auth.
-  #      Tests cosign's ability to store/retrieve signatures, not registry
-  #      compatibility. Real registry behavior is tested by consumer repos.
-  #   4. Single runner (no save/load) — the ADO multi-stage pattern (docker
-  #      save/load + ImageID re-verification) is platform-specific and tested
-  #      in azure-pipelines/pipeline.yml. This test covers the shared logic.
+  # WHAT THIS TESTS (same tasks as `task pipeline`):
+  #   Phase 1: task build
+  #   Phase 2: task sbom:generate → task sbom:scan (exit-code=1!) →
+  #            task sbom:scan:sbom → task sbom:policy
+  #   Phase 3: task push → task image:sign → task sbom:attest →
+  #            task sbom:attest:verify
+  #   + Extra assertions: SBOM structure, ImageID alignment, SHA256 invariant
   #
-  # If you add a relaxation here, document WHY and WHERE the real behavior
-  # is tested instead. If you can't answer both, don't relax it.
+  # KNOWN RELAXATIONS (inherent to CI, cannot be avoided):
+  #   1. Keypair signing (not keyless) — keyless requires OIDC identity
+  #      from a real registry push. The tasks use the same KMS > keyless >
+  #      keypair fallback as prod; here keypair wins because no OIDC.
+  #      Keyless is tested by consumer repos with supply-chain-reusable.yml.
+  #   2. Local registry:2 (no TLS, no auth) — inherent to CI without
+  #      external credentials. COSIGN_ALLOW_INSECURE_REGISTRY is the only
+  #      env override. Real registry tested by consumer repos.
+  #   3. Single runner (no save/load) — the ADO multi-stage pattern is
+  #      platform-specific, tested in azure-pipelines/pipeline.yml.
+  #
+  # NOT relaxed (same as prod):
+  #   - TRIVY_EXIT_CODE=1 (default, fail-closed)
+  #   - TRIVY_SEVERITY=HIGH,CRITICAL (default)
+  #   - OPA deny rules block the pipeline
+  #   - Digest resolution via tasks (same code path as prod)
+  #   - Same scripts, same policies
+  #
+  # If you need to add a relaxation, answer BOTH:
+  #   1. WHY can't you avoid it?
+  #   2. WHERE is the real behavior tested instead?
+  # If you can't answer both, don't relax.
   # =========================================================================
   e2e-test:
     runs-on: ubuntu-latest
     needs: validate
+    env:
+      # Inherent to local registry:2 (no TLS). This is the ONLY env
+      # override vs production. Same cosign commands, same tasks.
+      COSIGN_ALLOW_INSECURE_REGISTRY: "1"
+      COSIGN_PASSWORD: ""
 
     steps:
       - name: Checkout
@@ -101,80 +115,74 @@ jobs:
       - name: Install SBOM tools
         run: sudo task install
 
+      # --- SETUP ---
+      # Start registry BEFORE build so REGISTRY=localhost:5000 is the only
+      # image prefix. No dual-tag ambiguity, no RepoDigests ordering issue.
+      - name: Start local registry
+        run: |
+          docker run -d -p 5000:5000 --name registry registry:2
+          sleep 2
+
+      - name: Generate keypair
+        run: cosign generate-key-pair
+
       - name: Create test Dockerfile
         run: |
           mkdir -p app
-          printf 'FROM alpine:3.19\nRUN apk add --no-cache curl jq\nCMD ["echo", "SDLC test image"]\n' > app/Dockerfile
+          printf 'FROM alpine:latest\nRUN apk add --no-cache curl jq\nCMD ["echo", "SDLC test image"]\n' > app/Dockerfile
           cat app/Dockerfile
 
-      - name: Build test image
-        run: task build IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost
+      # --- PHASE 1: BUILD (same task as prod) ---
+      - name: "Phase 1: Build"
+        run: task build IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
-      - name: Generate SBOM
-        run: task sbom:generate IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost
+      # --- PHASE 2: ANALYZE (same tasks, same defaults, fail-closed) ---
+      - name: "Phase 2: Generate SBOM"
+        run: task sbom:generate IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
-      - name: Verify SBOM was generated
+      - name: "Assert: SBOM structure"
         run: |
           SBOM_FILE="output/sbom/image/sbom-image-trivy.json"
           if [ ! -s "$SBOM_FILE" ]; then
             echo "FATAL: SBOM file is empty or missing"
             exit 1
           fi
-
-          # Verify it's valid CycloneDX JSON
-          SPEC=$(jq -r '.specVersion' "$SBOM_FILE")
           FORMAT=$(jq -r '.bomFormat' "$SBOM_FILE")
           COMPONENTS=$(jq '.components | length' "$SBOM_FILE")
+          echo "Format: $FORMAT | Components: $COMPONENTS | Spec: $(jq -r '.specVersion' "$SBOM_FILE")"
+          [ "$FORMAT" = "CycloneDX" ] || { echo "FATAL: Not CycloneDX"; exit 1; }
+          [ "$COMPONENTS" -gt 0 ] || { echo "FATAL: Zero components"; exit 1; }
 
-          echo "SBOM format:    $FORMAT"
-          echo "Spec version:   $SPEC"
-          echo "Components:     $COMPONENTS"
-
-          if [ "$FORMAT" != "CycloneDX" ]; then
-            echo "FATAL: Not a CycloneDX SBOM"
-            exit 1
-          fi
-          if [ "$COMPONENTS" -eq 0 ]; then
-            echo "FATAL: SBOM has zero components"
-            exit 1
-          fi
-          echo "SBOM structure verified"
-
-      - name: Verify image-SBOM alignment
+      - name: "Assert: Image-SBOM alignment (ImageID cross-check)"
         run: |
-          IMAGE="localhost/sdlc-e2e-test:test"
-          ACTUAL_ID=$(docker inspect --format='{{.Id}}' "$IMAGE")
+          ACTUAL_ID=$(docker inspect --format='{{.Id}}' "localhost:5000/sdlc-e2e-test:test")
           SBOM_ID=$(jq -r '.metadata.component.properties[]? | select(.name == "aquasecurity:trivy:ImageID") | .value' output/sbom/image/sbom-image-trivy.json 2>/dev/null || echo "")
-
           echo "Image ID (docker): $ACTUAL_ID"
           echo "Image ID (SBOM):   $SBOM_ID"
-
           if [ -n "$SBOM_ID" ] && [ "$ACTUAL_ID" != "$SBOM_ID" ]; then
-            echo "FATAL: Image ID mismatch"
-            exit 1
+            echo "FATAL: Image ID mismatch"; exit 1
           fi
-          echo "Image-SBOM alignment verified"
 
-      - name: Record SBOM SHA256
+      - name: "Assert: Record SBOM SHA256"
         id: sbom-hash
         run: |
           SHA256=$(sha256sum output/sbom/image/sbom-image-trivy.json | awk '{print $1}')
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
           echo "SBOM SHA256: $SHA256"
 
-      # RELAXATION 1: TRIVY_EXIT_CODE=0 because alpine:3.19 has known CVEs.
-      # We test that trivy runs and produces scan output, not that this test
-      # image is vulnerability-free. Gate logic is tested by consumer repos.
-      - name: Scan vulnerabilities (trivy image)
-        run: task sbom:scan IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost TRIVY_EXIT_CODE=0
+      # No TRIVY_EXIT_CODE override — uses default "1" (fail-closed).
+      # If alpine:latest has HIGH/CRITICAL CVEs, this fails. Fix the
+      # base image, don't relax the test.
+      - name: "Phase 2: Scan vulnerabilities (trivy image — fail-closed)"
+        run: task sbom:scan IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
-      - name: Scan SBOM (trivy sbom — governance)
-        run: task sbom:scan:sbom IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost
+      - name: "Phase 2: Scan SBOM (trivy sbom — governance)"
+        run: task sbom:scan:sbom IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
-      - name: Policy check (OPA)
+      - name: "Phase 2: Policy check (OPA)"
         run: task sbom:policy
 
-      - name: Verify SBOM integrity (SHA256 unchanged after scan + policy)
+      - name: "Assert: SBOM integrity (SHA256 unchanged after scan + policy)"
         run: |
           EXPECTED="${{ steps.sbom-hash.outputs.sha256 }}"
           ACTUAL=$(sha256sum output/sbom/image/sbom-image-trivy.json | awk '{print $1}')
@@ -184,59 +192,20 @@ jobs:
             echo "FATAL: SBOM was modified during pipeline — integrity broken"
             exit 1
           fi
-          echo "SBOM integrity invariant verified end-to-end"
 
-      # RELAXATION 2: Keypair signing (not keyless). Keyless requires OIDC
-      # identity from a real registry. Keypair tests cosign mechanics.
-      # Keyless identity is tested by consumer repos with real registries.
-      - name: Generate keypair for signing test
-        run: COSIGN_PASSWORD="" cosign generate-key-pair
+      # --- PHASE 3: PUBLISH (same tasks, same digest resolution) ---
+      # Tasks resolve RepoDigest internally — same code path as prod.
+      - name: "Phase 3: Push"
+        run: task push IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
-      # RELAXATION 3: Local registry:2 (no TLS, no auth, no OCI referrers).
-      # Tests cosign store/retrieve, not registry compatibility.
-      # Real registry behavior is tested by consumer repos.
-      - name: Start local registry
-        run: |
-          docker run -d -p 5000:5000 --name registry registry:2
-          sleep 2
+      - name: "Phase 3: Sign image (task image:sign)"
+        run: task image:sign IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
-      - name: Push to local registry
-        id: push-local
-        run: |
-          docker tag localhost/sdlc-e2e-test:test localhost:5000/sdlc-e2e-test:test
-          docker push localhost:5000/sdlc-e2e-test:test
-          # Resolve digest for the local registry (not the build-time localhost/ prefix)
-          DIGEST=$(docker inspect --format='{{range .RepoDigests}}{{.}}{{"\n"}}{{end}}' localhost:5000/sdlc-e2e-test:test | grep "localhost:5000/")
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
-          echo "Resolved digest: ${DIGEST}"
+      - name: "Phase 3: Attest SBOM (task sbom:attest)"
+        run: task sbom:attest IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
-      - name: Sign image (keypair)
-        run: |
-          echo "Signing digest: ${{ steps.push-local.outputs.digest }}"
-          cosign sign --yes --key cosign.key "${{ steps.push-local.outputs.digest }}" --allow-insecure-registry
-        env:
-          COSIGN_PASSWORD: ""
-
-      - name: Attest SBOM (keypair)
-        run: |
-          echo "Attesting SBOM to digest: ${{ steps.push-local.outputs.digest }}"
-          cosign attest --yes \
-            --key cosign.key \
-            --predicate output/sbom/image/sbom-image-trivy.json \
-            --type cyclonedx \
-            "${{ steps.push-local.outputs.digest }}" --allow-insecure-registry
-        env:
-          COSIGN_PASSWORD: ""
-
-      - name: Verify signature (keypair)
-        run: |
-          echo "Verifying signature for digest: ${{ steps.push-local.outputs.digest }}"
-          cosign verify --key cosign.pub "${{ steps.push-local.outputs.digest }}" --allow-insecure-registry
-
-      - name: Verify attestation (keypair)
-        run: |
-          echo "Verifying attestation for digest: ${{ steps.push-local.outputs.digest }}"
-          cosign verify-attestation --key cosign.pub --type cyclonedx "${{ steps.push-local.outputs.digest }}" --allow-insecure-registry
+      - name: "Phase 3: Verify signature + attestation (task sbom:attest:verify)"
+        run: task sbom:attest:verify IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4

@@ -231,16 +231,19 @@ The pipeline is implemented on three platforms with the **same logical flow**:
 
 All three share the same order (build → analyze → gate → publish), the same tools (Trivy, Cosign, OPA), the same signing priority (KMS > keyless > keypair), and the same invariants (SBOM integrity, digest-only signing, post-publish verification). When a mechanism is added to one, it is added to all three. The `validate-toolchain.yml` workflow includes an **end-to-end test** (`e2e-test` job) that builds a test image, generates SBOM, runs all scans and policy checks, verifies the SBOM integrity invariant, then signs, attests, and verifies using a local registry. This catches integration regressions that unit-level checks would miss.
 
-**E2E test: known relaxations vs production** — each is documented inline in the workflow with a justification and where the real behavior is tested instead:
+**E2E test philosophy: as strict as prod, fail-closed.** The e2e runs the exact same Taskfile tasks with the same defaults — no `TRIVY_EXIT_CODE=0`, no `--ignore-unfixed`, no relaxed identity regexp. If the test image has HIGH/CRITICAL CVEs, the e2e fails; fix the base image, don't relax the test.
 
-| Relaxation | Reason | Where the real behavior is tested |
-|------------|--------|-----------------------------------|
-| `TRIVY_EXIT_CODE=0` | Test image (alpine) has known CVEs | Gate logic tested by consumer repos calling the reusable workflow |
-| Keypair signing (not keyless) | Keyless requires OIDC identity from a real registry | Consumer repos using `supply-chain-reusable.yml` with real registries |
-| Local `registry:2` (no TLS/auth/referrers) | Tests cosign store/retrieve mechanics | Consumer repos pushing to ghcr.io / ACR |
+Known relaxations (inherent to CI, each documented inline in the workflow):
+
+| Relaxation | Why unavoidable | Where the real behavior is tested |
+|------------|----------------|-----------------------------------|
+| Keypair signing (not keyless) | Keyless requires OIDC from a real registry push; tasks use the same KMS > keyless > keypair fallback | Consumer repos using `supply-chain-reusable.yml` with real registries |
+| Local `registry:2` + `COSIGN_ALLOW_INSECURE_REGISTRY` | No TLS without external certs in CI; this is the only env override | Consumer repos pushing to ghcr.io / ACR |
 | Single runner (no save/load) | ADO multi-stage pattern is platform-specific | `azure-pipelines/pipeline.yml` with docker save/load + ImageID re-check |
 
-**Rule: every relaxation must document WHY and WHERE the real behavior is tested. If you can't answer both, don't relax it.**
+Not relaxed (same as prod): `TRIVY_EXIT_CODE=1`, `TRIVY_SEVERITY=HIGH,CRITICAL`, OPA deny rules, digest resolution via tasks, same scripts, same policies.
+
+**Rule: every relaxation must answer WHY it can't be avoided and WHERE the real behavior is tested. If you can't answer both, don't relax.**
 
 ### Workflow output for downstream consumption
 
