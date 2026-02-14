@@ -55,7 +55,7 @@ expired_exception := {
 # ----- DENY: expired exception -----
 
 test_deny_expired_exception if {
-	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as {"exceptions": [expired_exception]}
+	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as [expired_exception]
 	count([m | some m in result; contains(m, "EXPIRED")]) > 0
 }
 
@@ -63,26 +63,26 @@ test_deny_expired_exception if {
 
 test_deny_missing_field_reason if {
 	exc := object.remove(valid_exception, {"reason"})
-	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as {"exceptions": [exc]}
+	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as [exc]
 	count([m | some m in result; contains(m, "missing required field")]) > 0
 }
 
 test_deny_missing_field_ticket if {
 	exc := object.remove(valid_exception, {"ticket"})
-	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as {"exceptions": [exc]}
+	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as [exc]
 	count([m | some m in result; contains(m, "missing required field")]) > 0
 }
 
 test_deny_empty_field if {
 	exc := json.patch(valid_exception, [{"op": "replace", "path": "/approved_by", "value": ""}])
-	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as {"exceptions": [exc]}
+	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as [exc]
 	count([m | some m in result; contains(m, "empty required field")]) > 0
 }
 
 # ----- NO DENY: valid exception -----
 
 test_no_deny_valid_exception if {
-	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as {"exceptions": [valid_exception]}
+	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as [valid_exception]
 	count([m | some m in result; contains(m, "EXPIRED")]) == 0
 	count([m | some m in result; contains(m, "missing required field")]) == 0
 }
@@ -90,14 +90,14 @@ test_no_deny_valid_exception if {
 # ----- NO DENY: no exceptions at all -----
 
 test_no_deny_no_exceptions if {
-	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as {"exceptions": []}
+	result := sbom.deny with input as valid_sbom_for_exceptions with data.exceptions as []
 	count([m | some m in result; contains(m, "exception")]) == 0
 }
 
 # ----- WARN: active exception listed for audit -----
 
 test_warn_active_exception_listed if {
-	result := sbom.warn with input as valid_sbom_for_exceptions with data.exceptions as {"exceptions": [valid_exception]}
+	result := sbom.warn with input as valid_sbom_for_exceptions with data.exceptions as [valid_exception]
 	count([m | some m in result; contains(m, "Active security exception")]) > 0
 }
 
@@ -112,6 +112,6 @@ test_warn_expiring_soon if {
 	# Since we can't mock time, we test the rule structure is correct
 	# by verifying the active exception warn fires (which uses the same
 	# time comparison logic)
-	result := sbom.warn with input as valid_sbom_for_exceptions with data.exceptions as {"exceptions": [valid_exception]}
+	result := sbom.warn with input as valid_sbom_for_exceptions with data.exceptions as [valid_exception]
 	count([m | some m in result; contains(m, "Active security exception")]) > 0
 }
