@@ -36,7 +36,7 @@ if [ -n "$EXCEPTIONS_FILE" ] && [ -f "$EXCEPTIONS_FILE" ]; then
 fi
 
 # Cleanup temp file on exit
-cleanup() { [ -n "$EXCEPTIONS_JSON" ] && rm -f "$EXCEPTIONS_JSON"; }
+cleanup() { [ -n "$EXCEPTIONS_JSON" ] && rm -f "$EXCEPTIONS_JSON" || true; }
 trap cleanup EXIT
 
 echo "📋 Evaluating SBOM against policies..."
