@@ -198,6 +198,22 @@ tasks:
           --exit-code {{.TRIVY_EXIT_CODE}}
       - echo "✅ Vulnerability scan complete → {{.SCAN_DIR}}/scan-trivy.json"
 
+  sbom:scan:sbom:
+    desc: "Scan SBOM for vulnerabilities (trivy sbom — governance alignment)"
+    cmds:
+      - mkdir -p {{.SCAN_DIR}}
+      - |
+        trivy sbom {{.SBOM_DIR}}/image/sbom-image-trivy.json \
+          --severity {{.TRIVY_SEVERITY}} \
+          --exit-code 0 \
+          --format json \
+          --output {{.SCAN_DIR}}/scan-sbom-trivy.json
+      - |
+        trivy sbom {{.SBOM_DIR}}/image/sbom-image-trivy.json \
+          --severity {{.TRIVY_SEVERITY}} \
+          --exit-code 0
+      - echo "✅ SBOM scan complete (advisory) → {{.SCAN_DIR}}/scan-sbom-trivy.json"
+
   sbom:policy:
     desc: "Evaluate SBOM against OPA policies (baseline + optional custom)"
     cmds:
@@ -373,6 +389,9 @@ tasks:
       - echo ""
       - echo "=== GATE PASSED ==="
       - echo ""
+      - echo "=== SBOM GOVERNANCE ==="
+      - task: sbom:scan:sbom
+      - echo ""
       - echo "=== PHASE 3 - PUBLISH ==="
       - task: push
       - task: image:sign
@@ -394,6 +413,9 @@ tasks:
       - task: sbom:generate
       - task: sbom:scan
       - task: sbom:policy
+      - echo ""
+      - echo "=== SBOM GOVERNANCE ==="
+      - task: sbom:scan:sbom
       - echo ""
       - echo "=================================================="
       - echo "✅ Local pipeline complete (no publish)."

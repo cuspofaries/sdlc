@@ -149,7 +149,7 @@ jobs:
             --output output/sbom/image/sbom-image-trivy.json
           echo "SBOM generated"
 
-      - name: Scan vulnerabilities (trivy image direct)
+      - name: Scan vulnerabilities (trivy image — security gate)
         run: |
           mkdir -p output/scans
           trivy image "${{ steps.image-ref.outputs.image }}" \
@@ -158,6 +158,15 @@ jobs:
             --format json \
             --output output/scans/scan-trivy.json
           echo "Vulnerability scan passed"
+
+      - name: Scan SBOM (trivy sbom — governance alignment)
+        run: |
+          trivy sbom output/sbom/image/sbom-image-trivy.json \
+            --severity ${{ inputs.trivy-severity }} \
+            --exit-code 0 \
+            --format json \
+            --output output/scans/scan-sbom-trivy.json
+          echo "SBOM scan complete (advisory)"
 
       - name: Policy check (OPA — baseline + custom)
         run: |

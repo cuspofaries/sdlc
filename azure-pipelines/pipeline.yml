@@ -80,7 +80,10 @@ stages:
             displayName: 'Generate Image SBOM'
 
           - script: task sbom:scan IMAGE_TAG=$(IMAGE_TAG)
-            displayName: 'Scan Vulnerabilities (trivy image)'
+            displayName: 'Scan Vulnerabilities (trivy image — security gate)'
+
+          - script: task sbom:scan:sbom IMAGE_TAG=$(IMAGE_TAG)
+            displayName: 'Scan SBOM (trivy sbom — governance alignment)'
 
           - script: task sbom:policy
             displayName: 'OPA Policy Check'

@@ -38,11 +38,12 @@ Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a s
 |---|------|------|-------------|
 | 4 | **Generate SBOM** | `trivy image --format cyclonedx` | Scans the local image and produces a full inventory (OS packages, libraries, versions, licenses) in CycloneDX JSON format. The SBOM answers: "what is actually inside my container?" |
 | 5 | **Scan vulnerabilities** | `trivy image --exit-code` | Scans the image **directly** (not the SBOM) for HIGH and CRITICAL CVEs. Uses `--exit-code 1` to block or `0` to warn without blocking. Direct image scan is more reliable than scanning the SBOM because Trivy accesses filesystem metadata. |
-| 6 | **Evaluate OPA policies** | `opa eval` | Evaluates the SBOM against Rego rules at two levels: **deny** (blocking — fails the pipeline) and **warn** (advisory — displays a warning). Baseline policies (`sdlc/policies/`) are automatically merged with custom policies from the app repo (`policies/`) if they exist. Example rules: blocked packages (known supply chain attacks), components without versions, unapproved licenses. |
+| 6 | **Scan SBOM** | `trivy sbom --exit-code 0` | Scans the SBOM itself for vulnerabilities (advisory, non-blocking). This ensures the attested SBOM has been verified: what we sign = what we scanned. Any delta with step 5 reveals SBOM inventory gaps. |
+| 7 | **Evaluate OPA policies** | `opa eval` | Evaluates the SBOM against Rego rules at two levels: **deny** (blocking — fails the pipeline) and **warn** (advisory — displays a warning). Baseline policies (`sdlc/policies/`) are automatically merged with custom policies from the app repo (`policies/`) if they exist. Example rules: blocked packages (known supply chain attacks), components without versions, unapproved licenses. |
 
 ```
 ══════════════════════════════════════════════════════
-  GATE: if step 5 or 6 fails → PIPELINE STOPS
+  GATE: if step 5 or 7 fails → PIPELINE STOPS
   Nothing is published. The image stays local.
 ══════════════════════════════════════════════════════
 ```
@@ -51,11 +52,11 @@ Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a s
 
 | # | Step | Tool | Explanation |
 |---|------|------|-------------|
-| 7 | **Login to registry** | `docker/login-action` | Authenticates to the container registry (GHCR, ACR, etc.) with the provided token. |
-| 8 | **Push image** | `docker push` | Pushes the image to the registry. At this point, we know it passed scanning and policies. |
-| 9 | **Sign digest** | `cosign sign --yes` | Signs the image digest with Cosign in **keyless** mode (OIDC via Sigstore). The signature proves the image was produced by this CI/CD pipeline and has not been tampered with. Verifiable by anyone with `cosign verify`. |
-| 10 | **Attest SBOM** | `cosign attest --type cyclonedx` | Cryptographically binds the SBOM to the image digest via an In-Toto attestation. This is the **strongest guarantee**: it proves that THIS SBOM describes exactly THIS image. The attestation is stored in the registry alongside the image. |
-| 11 | **Upload to Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Sends the SBOM to Dependency-Track for continuous monitoring. DTrack receives new CVEs daily and alerts if a component in your image becomes vulnerable, even without a rebuild. Optional step (skipped if `dtrack-hostname` is empty). |
+| 8 | **Login to registry** | `docker/login-action` | Authenticates to the container registry (GHCR, ACR, etc.) with the provided token. |
+| 9 | **Push image** | `docker push` | Pushes the image to the registry. At this point, we know it passed scanning and policies. |
+| 10 | **Sign digest** | `cosign sign --yes` | Signs the image digest with Cosign in **keyless** mode (OIDC via Sigstore). The signature proves the image was produced by this CI/CD pipeline and has not been tampered with. Verifiable by anyone with `cosign verify`. |
+| 11 | **Attest SBOM** | `cosign attest --type cyclonedx` | Cryptographically binds the SBOM to the image digest via an In-Toto attestation. This is the **strongest guarantee**: it proves that THIS SBOM describes exactly THIS image. The attestation is stored in the registry alongside the image. |
+| 12 | **Upload to Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Sends the SBOM to Dependency-Track for continuous monitoring. DTrack receives new CVEs daily and alerts if a component in your image becomes vulnerable, even without a rebuild. Optional step (skipped if `dtrack-hostname` is empty). |
 
 ### Visual summary
 
@@ -73,23 +74,26 @@ Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a s
         |                         |
         | OK                      | FAIL → STOP
         v
-  [6]   POLICY (OPA) ──────> deny / warn?
+  [6]   SCAN SBOM (trivy sbom) ─> Advisory (governance alignment)
+        |
+        v
+  [7]   POLICY (OPA) ──────> deny / warn?
         |                         |
         | OK                      | FAIL → STOP
         v
   ═══ GATE PASSED ═══
         |
         v
-  [7-8] PUSH ──────────────> Image in registry
+  [8-9] PUSH ──────────────> Image in registry
         |
         v
-  [9]   SIGN ──────────────> Cosign signature (keyless)
+  [10]  SIGN ──────────────> Cosign signature (keyless)
         |
         v
-  [10]  ATTEST ────────────> SBOM bound to digest (In-Toto)
+  [11]  ATTEST ────────────> SBOM bound to digest (In-Toto)
         |
         v
-  [11]  DTRACK ────────────> Continuous CVE monitoring
+  [12]  DTRACK ────────────> Continuous CVE monitoring
 ```
 
 ---
@@ -201,7 +205,8 @@ task pipeline \
 | `build` | Build image locally (no push) |
 | `sbom:generate` | Generate image SBOM (CycloneDX) |
 | `sbom:generate:source` | Generate source SBOM (declared deps) |
-| `sbom:scan` | Scan image for vulnerabilities (trivy image) |
+| `sbom:scan` | Scan image for vulnerabilities (trivy image — security gate) |
+| `sbom:scan:sbom` | Scan SBOM for vulnerabilities (trivy sbom — governance, advisory) |
 | `sbom:policy` | Evaluate SBOM against OPA policies |
 | `push` | Push image to registry |
 | `image:sign` | Sign image digest (cosign) |

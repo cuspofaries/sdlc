@@ -38,11 +38,12 @@ Trois repos distincts (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formaient
 |---|-------|-------|-------------|
 | 4 | **Generer le SBOM** | `trivy image --format cyclonedx` | Scanne l'image locale et produit un inventaire complet (OS packages, librairies, versions, licences) au format CycloneDX JSON. Le SBOM repond a la question : "qu'est-ce qui est reellement dans mon conteneur ?" |
 | 5 | **Scanner les vulnerabilites** | `trivy image --exit-code` | Scanne l'image **directement** (pas le SBOM) pour les CVE de severite HIGH et CRITICAL. Utilise `--exit-code 1` pour bloquer ou `0` pour avertir sans bloquer. C'est un scan direct sur l'image, plus fiable que scanner le SBOM car Trivy accede aux metadonnees du systeme de fichiers. |
-| 6 | **Evaluer les politiques OPA** | `opa eval` | Evalue le SBOM contre des regles Rego en deux niveaux : **deny** (bloquant — fait echouer le pipeline) et **warn** (consultatif — affiche un avertissement). Les politiques baseline (`sdlc/policies/`) sont automatiquement fusionnees avec les politiques custom du repo applicatif (`policies/`) si elles existent. Exemples de regles : packages bloques (supply chain attacks connus), composants sans version, licences non approuvees. |
+| 6 | **Scanner le SBOM** | `trivy sbom --exit-code 0` | Scanne le SBOM lui-meme pour les vulnerabilites (consultatif, non bloquant). Garantit que le SBOM atteste a ete verifie : ce qu'on signe = ce qu'on a scanne. Tout delta avec l'etape 5 revele des lacunes dans l'inventaire du SBOM. |
+| 7 | **Evaluer les politiques OPA** | `opa eval` | Evalue le SBOM contre des regles Rego en deux niveaux : **deny** (bloquant — fait echouer le pipeline) et **warn** (consultatif — affiche un avertissement). Les politiques baseline (`sdlc/policies/`) sont automatiquement fusionnees avec les politiques custom du repo applicatif (`policies/`) si elles existent. Exemples de regles : packages bloques (supply chain attacks connus), composants sans version, licences non approuvees. |
 
 ```
 ══════════════════════════════════════════════════════
-  GATE : si l'etape 5 ou 6 echoue → PIPELINE STOP
+  GATE : si l'etape 5 ou 7 echoue → PIPELINE STOP
   Rien n'est publie. L'image reste locale.
 ══════════════════════════════════════════════════════
 ```
@@ -51,11 +52,11 @@ Trois repos distincts (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formaient
 
 | # | Etape | Outil | Explication |
 |---|-------|-------|-------------|
-| 7 | **Login au registry** | `docker/login-action` | S'authentifie au registry conteneur (GHCR, ACR, etc.) avec le token fourni. |
-| 8 | **Push de l'image** | `docker push` | Pousse l'image vers le registry. A ce stade, on sait qu'elle a passe le scan et les politiques. |
-| 9 | **Signer le digest** | `cosign sign --yes` | Signe le digest de l'image avec Cosign en mode **keyless** (OIDC via Sigstore). La signature prouve que l'image a ete produite par cette pipeline CI/CD et n'a pas ete alteree. Verifiable par n'importe qui avec `cosign verify`. |
-| 10 | **Attester le SBOM** | `cosign attest --type cyclonedx` | Lie cryptographiquement le SBOM au digest de l'image via une attestation In-Toto. C'est la **garantie la plus forte** : elle prouve que CE SBOM decrit exactement CETTE image. L'attestation est stockee dans le registry a cote de l'image. |
-| 11 | **Upload vers Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Envoie le SBOM a Dependency-Track pour le monitoring continu. DTrack recoit les nouvelles CVE quotidiennement et alerte si un composant de votre image devient vulnerable, meme sans rebuild. Etape optionnelle (ignoree si `dtrack-hostname` est vide). |
+| 8 | **Login au registry** | `docker/login-action` | S'authentifie au registry conteneur (GHCR, ACR, etc.) avec le token fourni. |
+| 9 | **Push de l'image** | `docker push` | Pousse l'image vers le registry. A ce stade, on sait qu'elle a passe le scan et les politiques. |
+| 10 | **Signer le digest** | `cosign sign --yes` | Signe le digest de l'image avec Cosign en mode **keyless** (OIDC via Sigstore). La signature prouve que l'image a ete produite par cette pipeline CI/CD et n'a pas ete alteree. Verifiable par n'importe qui avec `cosign verify`. |
+| 11 | **Attester le SBOM** | `cosign attest --type cyclonedx` | Lie cryptographiquement le SBOM au digest de l'image via une attestation In-Toto. C'est la **garantie la plus forte** : elle prouve que CE SBOM decrit exactement CETTE image. L'attestation est stockee dans le registry a cote de l'image. |
+| 12 | **Upload vers Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Envoie le SBOM a Dependency-Track pour le monitoring continu. DTrack recoit les nouvelles CVE quotidiennement et alerte si un composant de votre image devient vulnerable, meme sans rebuild. Etape optionnelle (ignoree si `dtrack-hostname` est vide). |
 
 ### Resume visuel
 
@@ -73,23 +74,26 @@ Trois repos distincts (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formaient
         |                         |
         | OK                      | FAIL → STOP
         v
-  [6]   POLICY (OPA) ──────> deny / warn ?
+  [6]   SCAN SBOM (trivy sbom) ─> Consultatif (alignement gouvernance)
+        |
+        v
+  [7]   POLICY (OPA) ──────> deny / warn ?
         |                         |
         | OK                      | FAIL → STOP
         v
   ═══ GATE PASSED ═══
         |
         v
-  [7-8] PUSH ──────────────> Image dans le registry
+  [8-9] PUSH ──────────────> Image dans le registry
         |
         v
-  [9]   SIGN ──────────────> Signature Cosign (keyless)
+  [10]  SIGN ──────────────> Signature Cosign (keyless)
         |
         v
-  [10]  ATTEST ────────────> SBOM lie au digest (In-Toto)
+  [11]  ATTEST ────────────> SBOM lie au digest (In-Toto)
         |
         v
-  [11]  DTRACK ────────────> Monitoring continu des CVE
+  [12]  DTRACK ────────────> Monitoring continu des CVE
 ```
 
 ---
@@ -201,7 +205,8 @@ task pipeline \
 | `build` | Build image locale (pas de push) |
 | `sbom:generate` | Générer le SBOM image (CycloneDX) |
 | `sbom:generate:source` | Générer le SBOM source (dépendances déclarées) |
-| `sbom:scan` | Scanner l'image pour les vulnérabilités (trivy image) |
+| `sbom:scan` | Scanner l'image pour les vulnérabilités (trivy image — gate sécurité) |
+| `sbom:scan:sbom` | Scanner le SBOM pour les vulnérabilités (trivy sbom — gouvernance, consultatif) |
 | `sbom:policy` | Évaluer le SBOM contre les politiques OPA |
 | `push` | Push de l'image vers le registry |
 | `image:sign` | Signer le digest de l'image (cosign) |
