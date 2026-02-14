@@ -1,22 +1,22 @@
 version: '3'
 
 # ============================================================================
-# SDLC — Unified Supply Chain Security Toolchain
+# SDLC - Unified Supply Chain Security Toolchain
 # ============================================================================
-# Shift-left pipeline: build → analyze → publish
+# Shift-left pipeline: build -> analyze -> publish
 #
 # Usage:
 #   task install               → Install all tools
 #   task build                 → Build container image (local, no push)
 #   task sbom:generate         → Generate image SBOM (CycloneDX)
-#   task sbom:scan             → Scan image directly for vulnerabilities
-#   task sbom:policy           → Enforce OPA policies on SBOM
+#   task sbom:scan             → Scan image for vulnerabilities
+#   task sbom:policy           → Enforce OPA policies
 #   task push                  → Push image to registry
-#   task image:sign            → Sign image digest (cosign keyless or keypair)
+#   task image:sign            → Sign image digest (cosign)
 #   task sbom:attest           → Attest SBOM to image digest
-#   task sbom:upload           → Upload SBOM to Dependency-Track
-#   task pipeline              → Full pipeline (build → analyze → publish)
-#   task pipeline:local        → Local pipeline (build → analyze, no publish)
+#   task sbom:upload           → Upload to Dependency-Track
+#   task pipeline              → Full pipeline (build -> analyze -> publish)
+#   task pipeline:local        → Local pipeline (build -> analyze, no publish)
 #   task dtrack:up             → Start Dependency-Track stack
 #   task clean                 → Cleanup generated files
 # ============================================================================
@@ -66,7 +66,7 @@ tasks:
       - task: install:cdxgen
       - task: install:opa
       - task: install:oras
-      - echo "All tools installed"
+      - echo "✅ All tools installed"
       - task: install:verify
 
   install:trivy:
@@ -76,14 +76,14 @@ tasks:
         for i in 1 2 3; do
           echo "Attempt $i to install trivy..."
           if curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin; then
-            echo "Trivy installed successfully"
+            echo "✅ Trivy installed successfully"
             break
           else
-            echo "Attempt $i failed, retrying in 5 seconds..."
+            echo "⚠️  Attempt $i failed, retrying in 5 seconds..."
             sleep 5
           fi
           if [ $i -eq 3 ]; then
-            echo "Failed to install trivy after 3 attempts"
+            echo "❌ Failed to install trivy after 3 attempts"
             exit 1
           fi
         done
@@ -138,24 +138,24 @@ tasks:
     cmds:
       - |
         echo "=== Tool Versions ==="
-        echo -n "trivy:  " && trivy version 2>/dev/null | head -1 || echo "NOT INSTALLED"
-        echo -n "cosign: " && cosign version 2>/dev/null | head -1 || echo "NOT INSTALLED"
-        echo -n "cdxgen: " && cdxgen --version 2>/dev/null || echo "NOT INSTALLED"
-        echo -n "opa:    " && opa version 2>/dev/null | head -1 || echo "NOT INSTALLED"
-        echo -n "oras:   " && oras version 2>/dev/null | head -1 || echo "NOT INSTALLED"
+        echo -n "trivy:  " && trivy version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
+        echo -n "cosign: " && cosign version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
+        echo -n "cdxgen: " && cdxgen --version 2>/dev/null || echo "❌ NOT INSTALLED"
+        echo -n "opa:    " && opa version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
+        echo -n "oras:   " && oras version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
 
   # ==========================================================================
-  # PHASE 1 — BUILD (nothing leaves the machine)
+  # PHASE 1 - BUILD
   # ==========================================================================
 
   build:
     desc: "Build container image (local only, no push)"
     cmds:
       - docker build -t {{.IMAGE}} ./app
-      - echo "Image built: {{.IMAGE}}"
+      - echo "✅ Image built {{.IMAGE}}"
 
   # ==========================================================================
-  # PHASE 2 — ANALYZE (on the local image)
+  # PHASE 2 - ANALYZE
   # ==========================================================================
 
   sbom:generate:
@@ -166,20 +166,21 @@ tasks:
         trivy image {{.IMAGE}} \
           --format cyclonedx \
           --output {{.SBOM_DIR}}/image/sbom-image-trivy.json
-      - echo "Image SBOM generated -> {{.SBOM_DIR}}/image/sbom-image-trivy.json"
+      - echo "✅ Image SBOM → {{.SBOM_DIR}}/image/sbom-image-trivy.json"
 
   sbom:generate:source:
     desc: "Generate source SBOM (declared deps)"
     cmds:
       - mkdir -p {{.SBOM_DIR}}/source
       - ./scripts/sbom-generate-source.sh ./app {{.SBOM_DIR}}/source
-      - echo "Source SBOMs generated -> {{.SBOM_DIR}}/source/"
+      - echo "✅ Source SBOMs → {{.SBOM_DIR}}/source/"
 
   sbom:generate:all:
     desc: "Generate both source + image SBOMs"
     cmds:
       - task: sbom:generate
       - task: sbom:generate:source
+      - echo "✅ Source + Image SBOMs generated"
 
   sbom:scan:
     desc: "Scan image for vulnerabilities (trivy image direct)"
@@ -195,7 +196,7 @@ tasks:
         trivy image {{.IMAGE}} \
           --severity {{.TRIVY_SEVERITY}} \
           --exit-code {{.TRIVY_EXIT_CODE}}
-      - echo "Vulnerability scan complete -> {{.SCAN_DIR}}/scan-trivy.json"
+      - echo "✅ Vulnerability scan complete → {{.SCAN_DIR}}/scan-trivy.json"
 
   sbom:policy:
     desc: "Evaluate SBOM against OPA policies (baseline + optional custom)"
@@ -203,14 +204,14 @@ tasks:
       - ./scripts/sbom-policy.sh {{.SBOM_DIR}}/image/sbom-image-trivy.json ./policies {{.EXTRA_POLICIES}}
 
   # ==========================================================================
-  # PHASE 3 — PUBLISH (only after analyze passes)
+  # PHASE 3 - PUBLISH
   # ==========================================================================
 
   push:
     desc: "Push image to registry"
     cmds:
       - docker push {{.IMAGE}}
-      - echo "Image pushed: {{.IMAGE}}"
+      - echo "✅ Image pushed {{.IMAGE}}"
 
   image:sign:
     desc: "Sign image digest with cosign (keyless in CI, keypair locally)"
@@ -230,7 +231,7 @@ tasks:
           echo "No signing method available. Run: task signing:init"
           exit 1
         fi
-      - echo "Image signed: {{.IMAGE}}"
+      - echo "✅ Image signed {{.IMAGE}}"
 
   image:verify:
     desc: "Verify image signature"
@@ -244,7 +245,20 @@ tasks:
             --certificate-identity-regexp "github.com/" \
             "{{.IMAGE}}"
         fi
-      - echo "Image signature verified"
+      - echo "✅ Image signature verified"
+
+  # ==========================================================================
+  # SBOM SIGNING & ATTESTATION
+  # ==========================================================================
+
+  signing:init:
+    desc: "Generate Cosign keypair (POC only - use keyless in prod)"
+    cmds:
+      - COSIGN_PASSWORD="" cosign generate-key-pair
+      - echo "✅ Keypair generated → cosign.key / cosign.pub"
+    status:
+      - test -f cosign.key
+      - test -f cosign.pub
 
   sbom:attest:
     desc: "Attest image SBOM to image digest (strongest — requires registry)"
@@ -263,7 +277,7 @@ tasks:
               --key {{.COSIGN_KEY}} \
               --output-signature "${sbom}.sig" \
               "$sbom" --yes 2>/dev/null
-            echo "Signed -> ${sbom}.sig"
+            echo "✅ Signed → ${sbom}.sig"
           fi
         done
 
@@ -279,19 +293,6 @@ tasks:
       - ./scripts/sbom-upload-dtrack.sh {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.DTRACK_URL}} {{.DTRACK_API_KEY}} {{.DTRACK_PROJECT}}
 
   # ==========================================================================
-  # SIGNING SETUP
-  # ==========================================================================
-
-  signing:init:
-    desc: "Generate Cosign keypair (POC only - use keyless in prod)"
-    cmds:
-      - COSIGN_PASSWORD="" cosign generate-key-pair
-      - echo "Keypair generated -> cosign.key / cosign.pub"
-    status:
-      - test -f cosign.key
-      - test -f cosign.pub
-
-  # ==========================================================================
   # SBOM VERIFICATION
   # ==========================================================================
 
@@ -303,8 +304,12 @@ tasks:
   sbom:verify:blob:
     desc: "Verify standalone SBOM blob signature"
     cmds:
-      - cosign verify-blob --key {{.COSIGN_PUB}} --signature {{.SBOM_DIR}}/image/sbom-image-trivy.json.sig {{.SBOM_DIR}}/image/sbom-image-trivy.json
-      - echo "SBOM signature valid"
+      - |
+        cosign verify-blob \
+          --key {{.COSIGN_PUB}} \
+          --signature {{.SBOM_DIR}}/image/sbom-image-trivy.json.sig \
+          {{.SBOM_DIR}}/image/sbom-image-trivy.json
+      - echo "✅ SBOM signature valid"
 
   sbom:tamper:test:
     desc: "Simulate SBOM tampering (demo integrity check)"
@@ -318,8 +323,11 @@ tasks:
   sbom:store:
     desc: "Store SBOM as OCI artifact in registry"
     cmds:
-      - oras push {{.REGISTRY}}/{{.IMAGE_NAME}}:{{.IMAGE_TAG}}-sbom --artifact-type application/vnd.cyclonedx+json {{.SBOM_DIR}}/image/sbom-image-trivy.json:application/json
-      - echo "SBOM stored -> {{.REGISTRY}}/{{.IMAGE_NAME}}:{{.IMAGE_TAG}}-sbom"
+      - |
+        oras push {{.REGISTRY}}/{{.IMAGE_NAME}}:{{.IMAGE_TAG}}-sbom \
+          --artifact-type application/vnd.cyclonedx+json \
+          {{.SBOM_DIR}}/image/sbom-image-trivy.json:application/json
+      - echo "✅ SBOM stored → {{.REGISTRY}}/{{.IMAGE_NAME}}:{{.IMAGE_TAG}}-sbom"
 
   sbom:fetch:
     desc: "Fetch SBOM from OCI registry"
@@ -328,7 +336,7 @@ tasks:
       - |
         oras pull {{.REGISTRY}}/{{.IMAGE_NAME}}:{{.IMAGE_TAG}}-sbom \
           -o {{.SBOM_DIR}}/fetched/
-      - echo "SBOM fetched -> {{.SBOM_DIR}}/fetched/"
+      - echo "✅ SBOM fetched → {{.SBOM_DIR}}/fetched/"
 
   # ==========================================================================
   # DEPENDENCY-TRACK
@@ -338,8 +346,9 @@ tasks:
     desc: "Start Dependency-Track (docker compose)"
     cmds:
       - docker compose -f docker-compose.dtrack.yml up -d
-      - echo "Dependency-Track starting -> http://localhost:8081"
+      - echo "✅ Dependency-Track starting → http://localhost:8081"
       - echo "   Default credentials - admin / admin"
+      - echo "   ⏳ First startup takes 2-3 minutes..."
 
   dtrack:down:
     desc: "Stop Dependency-Track"
@@ -353,39 +362,41 @@ tasks:
   pipeline:
     desc: "Full supply chain pipeline (build -> analyze -> GATE -> publish)"
     cmds:
-      - echo "=== PHASE 1 — BUILD ==="
+      - echo "🚀 Starting full supply chain pipeline..."
+      - echo "=== PHASE 1 - BUILD ==="
       - task: build
       - echo ""
-      - echo "=== PHASE 2 — ANALYZE ==="
+      - echo "=== PHASE 2 - ANALYZE ==="
       - task: sbom:generate
       - task: sbom:scan
       - task: sbom:policy
       - echo ""
       - echo "=== GATE PASSED ==="
       - echo ""
-      - echo "=== PHASE 3 — PUBLISH ==="
+      - echo "=== PHASE 3 - PUBLISH ==="
       - task: push
       - task: image:sign
       - task: sbom:attest
       - task: sbom:upload
       - echo ""
       - echo "=================================================="
-      - echo "Pipeline complete. Outputs in ./output/"
+      - echo "✅ Pipeline complete. Outputs in ./output/"
       - echo "=================================================="
 
   pipeline:local:
     desc: "Local pipeline (build -> analyze, no publish)"
     cmds:
-      - echo "=== PHASE 1 — BUILD ==="
+      - echo "🚀 Starting local pipeline..."
+      - echo "=== PHASE 1 - BUILD ==="
       - task: build
       - echo ""
-      - echo "=== PHASE 2 — ANALYZE ==="
+      - echo "=== PHASE 2 - ANALYZE ==="
       - task: sbom:generate
       - task: sbom:scan
       - task: sbom:policy
       - echo ""
       - echo "=================================================="
-      - echo "Local pipeline complete (no publish)."
+      - echo "✅ Local pipeline complete (no publish)."
       - echo "Outputs in ./output/"
       - echo "=================================================="
 
@@ -397,10 +408,10 @@ tasks:
     desc: "Remove all generated files"
     cmds:
       - rm -rf ./output
-      - echo "Cleaned output directory"
+      - echo "✅ Cleaned output directory"
 
   clean:all:
     desc: "Remove everything (output + keys)"
     cmds:
       - rm -rf ./output cosign.key cosign.pub
-      - echo "Full cleanup done"
+      - echo "✅ Full cleanup done"
