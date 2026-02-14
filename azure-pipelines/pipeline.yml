@@ -3,6 +3,11 @@
 # =============================================================================
 # Shift-left approach: build → analyze (GATE) → publish
 # Calls the SAME Taskfile targets as GitHub Actions.
+#
+# Prerequisites (see CHECKLIST at bottom of file):
+#   - Variable Group "supply-chain" linked to this pipeline
+#   - Docker service connection to ACR
+#   - (Optional) OIDC service connection for cosign keyless signing
 # =============================================================================
 
 trigger:
@@ -25,9 +30,13 @@ schedules:
     always: true
 
 variables:
-  IMAGE_NAME: 'supply-chain-poc'
-  IMAGE_TAG: '$(Build.SourceVersion)'
-  REGISTRY: '$(ACR_NAME).azurecr.io'   # Set ACR_NAME in Variable Group
+  - group: supply-chain   # Must contain: ACR_NAME, and optionally DTRACK_URL, DTRACK_API_KEY
+  - name: IMAGE_NAME
+    value: 'supply-chain-poc'
+  - name: IMAGE_TAG
+    value: '$(Build.SourceVersion)'
+  - name: REGISTRY
+    value: '$(ACR_NAME).azurecr.io'
 
 pool:
   vmImage: 'ubuntu-latest'
@@ -104,6 +113,13 @@ stages:
           - script: sudo task install:cosign
             displayName: 'Install Cosign'
 
+          # Login to ACR
+          - task: Docker@2
+            displayName: 'Login to ACR'
+            inputs:
+              command: login
+              containerRegistry: 'acr-service-connection'   # Name of your Docker service connection
+
           # Download SBOM from previous stage
           - task: DownloadBuildArtifacts@1
             displayName: 'Download SBOM Outputs'
@@ -114,6 +130,7 @@ stages:
               downloadPath: '$(System.DefaultWorkingDirectory)'
 
           - script: |
+              mkdir -p output
               cp -r sbom-outputs/* output/ 2>/dev/null || true
             displayName: 'Restore SBOM Outputs'
 
@@ -188,3 +205,43 @@ stages:
                 echo "No previous SBOM found, skipping rescan"
               fi
             displayName: 'Rescan for New Vulns'
+
+# =============================================================================
+# CHECKLIST — Porter ce pipeline sur Azure DevOps
+# =============================================================================
+#
+# 1. AZURE CONTAINER REGISTRY (ACR)
+#    [ ] Creer un ACR : az acr create -n <name> -g <rg> --sku Basic
+#    [ ] Creer un Service Connection Docker dans Azure DevOps :
+#        Project Settings > Service connections > New > Docker Registry
+#        Nommer : "acr-service-connection" (ou adapter ligne 108)
+#
+# 2. VARIABLE GROUP "supply-chain"
+#    [ ] Pipelines > Library > + Variable group
+#        Nom : "supply-chain"
+#        Variables :
+#          ACR_NAME = <nom-de-votre-acr>           (ex: myorgacr)
+#          DTRACK_URL = https://dep-api.example.com (optionnel)
+#          DTRACK_API_KEY = odt_xxx                 (optionnel, marquer secret)
+#    [ ] Lier le variable group a cette pipeline
+#
+# 3. COSIGN SIGNING (choisir une option)
+#    Option A — Keyless via Workload Identity (recommande) :
+#      [ ] Creer un Service Connection OIDC (Workload Identity Federation)
+#      [ ] Le script sbom-sign.sh detecte SYSTEM_OIDCREQUESTURI automatiquement
+#    Option B — Keypair (POC) :
+#      [ ] Generer : cosign generate-key-pair
+#      [ ] Stocker cosign.key en Secure File (Library > Secure files)
+#      [ ] Ajouter une etape DownloadSecureFile avant image:sign
+#
+# 4. PIPELINE
+#    [ ] Pipelines > New pipeline > Azure Repos Git (ou GitHub)
+#    [ ] Pointer vers azure-pipelines/pipeline.yml
+#    [ ] Autoriser le variable group et le service connection
+#    [ ] Run
+#
+# 5. ADAPTER (si besoin)
+#    [ ] IMAGE_NAME : changer "supply-chain-poc" (ligne 37)
+#    [ ] Service connection : changer "acr-service-connection" (ligne 108)
+#    [ ] Taskfile ./app : adapter le chemin si votre Dockerfile est ailleurs
+# =============================================================================
