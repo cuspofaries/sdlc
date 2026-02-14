@@ -83,7 +83,7 @@ Le pipeline Azure DevOps attend un variable group nomme `supply-chain` (ligne ~3
 
 ## 7. Azure Key Vault KMS (signature)
 
-La strategie de signature est : **KMS > keyless > keypair**.
+La strategie de signature est : **KMS > keyless CI > keypair**. Le keyless n'est tente que si un fournisseur OIDC CI est detecte (`SYSTEM_OIDCREQUESTURI` pour Azure DevOps).
 
 Pour utiliser KMS :
 1. Creer un Key Vault : `az keyvault create -n <name> -g <rg>`

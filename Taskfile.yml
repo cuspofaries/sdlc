@@ -252,7 +252,7 @@ tasks:
       - echo "✅ Image pushed {{.IMAGE}}"
 
   image:sign:
-    desc: "Sign image digest with cosign (KMS > keyless > keypair)"
+    desc: "Sign image digest with cosign (KMS > CI keyless > keypair)"
     cmds:
       - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" ./scripts/image-sign.sh {{.IMAGE}} {{.COSIGN_KEY}}
 

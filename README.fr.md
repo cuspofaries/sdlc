@@ -140,13 +140,17 @@ Cet invariant est applique par trois mecanismes :
 
 ### Pourquoi KMS plutot que keyless (contexte entreprise)
 
-La strategie de signature suit un ordre de priorite : **KMS > keyless > keypair**.
+La strategie de signature suit un ordre de priorite : **KMS > keyless CI > keypair**.
 
-- **Azure Key Vault KMS** (`azurekms://`) : Recommande pour l'entreprise. La cle privee ne quitte jamais le HSM, la signature est auditee dans Azure, et la cle peut etre rotee sans modifier le pipeline. Necessite une service connection Azure avec les permissions `sign`, `verify`, `get` sur la cle.
+Tous les scripts de signature (`image-sign.sh`, `slsa-provenance.sh`, `sbom-attest.sh`) utilisent la meme logique de detection :
 
-- **Keyless** (OIDC via Sigstore) : Approche zero gestion de cle. Le runner CI obtient un certificat ephemere de Fulcio base sur son identite OIDC. Les signatures sont enregistrees dans le log de transparence Rekor. Ideal pour l'open source, mais necessite l'infrastructure publique Sigstore.
+1. **Azure Key Vault KMS** (`azurekms://`) : Si `COSIGN_KMS_KEY` est defini. Recommande pour l'entreprise. La cle privee ne quitte jamais le HSM, la signature est auditee dans Azure, et la cle peut etre rotee sans modifier le pipeline.
 
-- **Keypair** : Fichiers `.pem` locaux. Le plus simple mais le plus difficile a gerer (rotation, stockage securise). Reserve au developpement ou aux environnements air-gap.
+2. **Keyless** (OIDC via Sigstore) : Si un fournisseur OIDC CI est detecte — `ACTIONS_ID_TOKEN_REQUEST_URL` (GitHub Actions) ou `SYSTEM_OIDCREQUESTURI` (Azure DevOps). Le runner obtient un certificat ephemere de Fulcio. **Le keyless n'est jamais tente a l'aveugle** : les scripts verifient les variables d'env specifiques au CI d'abord, donc il ne declenche jamais un login interactif dans le browser en contexte local ou e2e.
+
+3. **Keypair** : Si un fichier `cosign.key` existe. Le plus simple mais le plus difficile a gerer (rotation, stockage securise). Reserve au developpement, aux tests e2e ou aux environnements air-gap.
+
+Si aucune methode n'est disponible, le script echoue avec une erreur claire listant les options.
 
 ### Pourquoi restreindre `--certificate-identity-regexp`
 
@@ -237,7 +241,7 @@ Le pipeline est implemente sur trois plateformes avec le **meme flux logique** :
 | **Azure DevOps** | `azure-pipelines/pipeline.yml` | Multi-stage (BuildAndAnalyze → Publish → DailyRescan) |
 | **Local / tout CI** | `Taskfile.yml` + `scripts/` | Tasks portables, appelees par GH et ADO |
 
-Les trois partagent le meme ordre (build → analyse → gate → publication), les memes outils (Trivy, Cosign, OPA), la meme priorite de signature (KMS > keyless > keypair), et les memes invariants (integrite SBOM, signature sur digest uniquement, verification post-publication). Quand un mecanisme est ajoute a l'un, il est ajoute aux trois. Le workflow `validate-toolchain.yml` inclut un **test end-to-end** (job `e2e-test`) qui construit une image de test, genere le SBOM, execute tous les scans et verifications de politique, verifie l'invariant d'integrite SBOM, puis signe, atteste et verifie avec un registry local. Cela detecte les regressions d'integration que des verifications unitaires ne detecteraient pas.
+Les trois partagent le meme ordre (build → analyse → gate → publication), les memes outils (Trivy, Cosign, OPA), la meme priorite de signature (KMS > keyless CI > keypair), et les memes invariants (integrite SBOM, signature sur digest uniquement, verification post-publication). Quand un mecanisme est ajoute a l'un, il est ajoute aux trois. Le workflow `validate-toolchain.yml` inclut un **test end-to-end** (job `e2e-test`) qui construit une image de test, genere le SBOM, execute tous les scans et verifications de politique, verifie l'invariant d'integrite SBOM, puis signe, atteste et verifie avec un registry local. Cela detecte les regressions d'integration que des verifications unitaires ne detecteraient pas.
 
 **Philosophie e2e : aussi strict que la prod, fail-closed.** Le e2e execute les memes tasks Taskfile avec les memes defaults — pas de `TRIVY_EXIT_CODE=0`, pas de `--ignore-unfixed`, pas de regexp d'identite relachee. Si l'image de test a des CVEs HIGH/CRITICAL, le e2e echoue ; on corrige l'image de base, on ne relaxe pas le test.
 
@@ -245,7 +249,7 @@ Relaxations connues (inherentes au CI, chacune documentee inline dans le workflo
 
 | Relaxation | Pourquoi inevitable | Ou le comportement reel est teste |
 |------------|---------------------|-----------------------------------|
-| Signature par keypair (pas keyless) | Keyless necessite OIDC depuis un vrai registry ; les tasks utilisent le meme fallback KMS > keyless > keypair | Repos consommateurs utilisant `supply-chain-reusable.yml` avec de vrais registries |
+| Signature par keypair (pas keyless) | Keyless necessite OIDC depuis un fournisseur CI ; les scripts detectent les variables d'env (`ACTIONS_ID_TOKEN_REQUEST_URL`, `SYSTEM_OIDCREQUESTURI`) et ne tentent le keyless que quand disponible | Repos consommateurs utilisant `supply-chain-reusable.yml` avec de vrais registries |
 | `registry:2` local + `COSIGN_ALLOW_INSECURE_REGISTRY` | Pas de TLS sans certificats externes en CI ; c'est le seul override d'env | Repos consommateurs poussant vers ghcr.io / ACR |
 | Runner unique (pas de save/load) | Le pattern multi-stage ADO est specifique a la plateforme | `azure-pipelines/pipeline.yml` avec docker save/load + re-verification ImageID |
 
@@ -258,7 +262,7 @@ Non relaxe (identique a la prod) : `TRIVY_EXIT_CODE=1`, `TRIVY_SEVERITY=HIGH,CRI
 [SLSA](https://slsa.dev/) (Supply chain Levels for Software Artifacts) enregistre **qui** a construit une image, a partir de **quelle** source, et **comment**. Le pipeline atteste un predicat de provenance SLSA au digest de l'image en plus de l'attestation SBOM :
 
 - **GitHub Actions** : Utilise `actions/attest-build-provenance@v2` (attestation native GitHub, stockee dans le package registry).
-- **Azure DevOps / local** : Utilise `scripts/slsa-provenance.sh` qui genere un predicat SLSA v1.0 (ID du builder, repo source, revision, URL du build) et l'atteste via cosign avec la meme priorite KMS > keyless > keypair.
+- **Azure DevOps / local** : Utilise `scripts/slsa-provenance.sh` qui genere un predicat SLSA v0.2 (ID du builder, repo source, revision, URL du build) et l'atteste via cosign avec la meme priorite KMS > keyless CI > keypair.
 
 Cela fournit une chaine verifiable depuis l'image publiee jusqu'au commit source exact et au run CI qui l'a produite.
 

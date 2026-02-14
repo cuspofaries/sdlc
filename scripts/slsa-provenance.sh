@@ -5,8 +5,16 @@
 # Usage: slsa-provenance.sh <image> <cosign-key>
 #
 # Generates a SLSA v0.2 provenance predicate (in-toto format) and attests it
-# to the image digest using cosign. Falls back to the same KMS > keyless >
-# keypair priority as image-sign.sh.
+# to the image digest using cosign.
+#
+# Signing priority (same as image-sign.sh):
+#   1. Azure Key Vault KMS    (COSIGN_KMS_KEY set)
+#   2. GitHub Actions keyless  (ACTIONS_ID_TOKEN_REQUEST_URL detected)
+#   3. Azure DevOps keyless    (SYSTEM_OIDCREQUESTURI detected)
+#   4. Keypair                 (cosign.key file exists)
+#
+# Keyless is ONLY attempted when a CI OIDC provider is detected, so it
+# never triggers an interactive browser login in local or e2e contexts.
 #
 # Env: COSIGN_KMS_KEY (optional), BUILD_ID, BUILD_URL, SOURCE_REPO, SOURCE_SHA
 # =============================================================================
@@ -71,15 +79,27 @@ cat "$PROVENANCE_FILE"
 COSIGN_ARGS=(attest --yes --predicate "$PROVENANCE_FILE" --type slsaprovenance)
 
 if [ -n "${COSIGN_KMS_KEY:-}" ]; then
-  echo "Attesting with KMS key..."
+  echo "── Mode: Azure Key Vault KMS ──"
   cosign "${COSIGN_ARGS[@]}" --key "azurekms://${COSIGN_KMS_KEY}" "$DIGEST"
+
+elif [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+  echo "── Mode: GitHub Actions keyless (OIDC) ──"
+  cosign "${COSIGN_ARGS[@]}" "$DIGEST"
+
+elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
+  echo "── Mode: Azure DevOps keyless (Workload Identity) ──"
+  cosign "${COSIGN_ARGS[@]}" "$DIGEST"
+
 elif [ -f "$COSIGN_KEY" ]; then
-  echo "Attesting with keypair..."
+  echo "── Mode: Keypair (${COSIGN_KEY}) ──"
   cosign "${COSIGN_ARGS[@]}" --key "$COSIGN_KEY" "$DIGEST"
-elif cosign "${COSIGN_ARGS[@]}" "$DIGEST" 2>/dev/null; then
-  echo "Attested with keyless (OIDC)"
+
 else
-  echo "FATAL: No signing method available (no KMS, no keypair, no OIDC)" >&2
+  echo "FATAL: No signing method available." >&2
+  echo "   Options:" >&2
+  echo "   - Set COSIGN_KMS_KEY for Azure Key Vault KMS" >&2
+  echo "   - Run in GitHub Actions or Azure DevOps (keyless)" >&2
+  echo "   - Generate a keypair: task signing:init" >&2
   rm -f "$PROVENANCE_FILE"
   exit 1
 fi

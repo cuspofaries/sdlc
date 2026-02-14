@@ -140,13 +140,17 @@ This is enforced by three mechanisms:
 
 ### Why KMS over keyless (enterprise context)
 
-The signing strategy follows a priority order: **KMS > keyless > keypair**.
+The signing strategy follows a priority order: **KMS > CI keyless > keypair**.
 
-- **Azure Key Vault KMS** (`azurekms://`): Recommended for enterprise. The private key never leaves the HSM, signing is audited in Azure, and the key can be rotated without changing the pipeline. Requires an Azure service connection with `sign`, `verify`, `get` permissions on the key.
+All signing scripts (`image-sign.sh`, `slsa-provenance.sh`, `sbom-attest.sh`) use the same detection logic:
 
-- **Keyless** (OIDC via Sigstore): Zero-key-management approach. The CI runner gets an ephemeral certificate from Fulcio based on its OIDC identity. Signatures are recorded in the Rekor transparency log. Great for open source, but requires public Sigstore infrastructure and trusting the Rekor log.
+1. **Azure Key Vault KMS** (`azurekms://`): If `COSIGN_KMS_KEY` is set. Recommended for enterprise. The private key never leaves the HSM, signing is audited in Azure, and the key can be rotated without changing the pipeline.
 
-- **Keypair**: Local `.pem` files. Simplest but hardest to manage (key rotation, secure storage). Reserved for development or air-gapped environments.
+2. **Keyless** (OIDC via Sigstore): If a CI OIDC provider is detected — `ACTIONS_ID_TOKEN_REQUEST_URL` (GitHub Actions) or `SYSTEM_OIDCREQUESTURI` (Azure DevOps). The runner gets an ephemeral certificate from Fulcio. **Keyless is never attempted blindly**: the scripts check for CI-specific env vars first, so it never triggers an interactive browser login in local or e2e contexts.
+
+3. **Keypair**: If a `cosign.key` file exists. Simplest but hardest to manage (key rotation, secure storage). Reserved for development, e2e tests, or air-gapped environments.
+
+If none of the above is available, the script fails with a clear error listing the options.
 
 ### Why restrict `--certificate-identity-regexp`
 
@@ -237,7 +241,7 @@ The pipeline is implemented on three platforms with the **same logical flow**:
 | **Azure DevOps** | `azure-pipelines/pipeline.yml` | Multi-stage (BuildAndAnalyze → Publish → DailyRescan) |
 | **Local / any CI** | `Taskfile.yml` + `scripts/` | Portable tasks, called by both GH and ADO |
 
-All three share the same order (build → analyze → gate → publish), the same tools (Trivy, Cosign, OPA), the same signing priority (KMS > keyless > keypair), and the same invariants (SBOM integrity, digest-only signing, post-publish verification). When a mechanism is added to one, it is added to all three. The `validate-toolchain.yml` workflow includes an **end-to-end test** (`e2e-test` job) that builds a test image, generates SBOM, runs all scans and policy checks, verifies the SBOM integrity invariant, then signs, attests, and verifies using a local registry. This catches integration regressions that unit-level checks would miss.
+All three share the same order (build → analyze → gate → publish), the same tools (Trivy, Cosign, OPA), the same signing priority (KMS > CI keyless > keypair), and the same invariants (SBOM integrity, digest-only signing, post-publish verification). When a mechanism is added to one, it is added to all three. The `validate-toolchain.yml` workflow includes an **end-to-end test** (`e2e-test` job) that builds a test image, generates SBOM, runs all scans and policy checks, verifies the SBOM integrity invariant, then signs, attests, and verifies using a local registry. This catches integration regressions that unit-level checks would miss.
 
 **E2E test philosophy: as strict as prod, fail-closed.** The e2e runs the exact same Taskfile tasks with the same defaults — no `TRIVY_EXIT_CODE=0`, no `--ignore-unfixed`, no relaxed identity regexp. If the test image has HIGH/CRITICAL CVEs, the e2e fails; fix the base image, don't relax the test.
 
@@ -245,7 +249,7 @@ Known relaxations (inherent to CI, each documented inline in the workflow):
 
 | Relaxation | Why unavoidable | Where the real behavior is tested |
 |------------|----------------|-----------------------------------|
-| Keypair signing (not keyless) | Keyless requires OIDC from a real registry push; tasks use the same KMS > keyless > keypair fallback | Consumer repos using `supply-chain-reusable.yml` with real registries |
+| Keypair signing (not keyless) | Keyless requires OIDC from a CI provider; scripts detect env vars (`ACTIONS_ID_TOKEN_REQUEST_URL`, `SYSTEM_OIDCREQUESTURI`) and only attempt keyless when available | Consumer repos using `supply-chain-reusable.yml` with real registries |
 | Local `registry:2` + `COSIGN_ALLOW_INSECURE_REGISTRY` | No TLS without external certs in CI; this is the only env override | Consumer repos pushing to ghcr.io / ACR |
 | Single runner (no save/load) | ADO multi-stage pattern is platform-specific | `azure-pipelines/pipeline.yml` with docker save/load + ImageID re-check |
 
@@ -258,7 +262,7 @@ Not relaxed (same as prod): `TRIVY_EXIT_CODE=1`, `TRIVY_SEVERITY=HIGH,CRITICAL`,
 [SLSA](https://slsa.dev/) (Supply chain Levels for Software Artifacts) provenance records **who** built an image, **from what** source, and **how**. The pipeline attests a SLSA provenance predicate to the image digest alongside the SBOM attestation:
 
 - **GitHub Actions**: Uses `actions/attest-build-provenance@v2` (native GitHub attestation, stored in the package registry).
-- **Azure DevOps / local**: Uses `scripts/slsa-provenance.sh` which generates a SLSA v1.0 predicate (builder ID, source repo, revision, build URL) and attests it via cosign with the same KMS > keyless > keypair priority.
+- **Azure DevOps / local**: Uses `scripts/slsa-provenance.sh` which generates a SLSA v0.2 predicate (builder ID, source repo, revision, build URL) and attests it via cosign with the same KMS > CI keyless > keypair priority.
 
 This provides a verifiable chain from the published image back to the exact source commit and CI run that produced it.
 
