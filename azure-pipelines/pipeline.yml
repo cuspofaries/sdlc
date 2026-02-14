@@ -313,11 +313,18 @@ stages:
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
 
-          # Post-sign verification: confirm signature is retrievable from registry
-          # Full output archived in output/verify/ for audit trail.
+          # ── VERIFY (fail-closed: all 3 must pass) ──
+          # Identity constraints on every verify: proves who built the image.
+          # Logs archived in output/verify/ for audit trail.
           - script: |
               mkdir -p output/verify
-              echo "Verifying signature for digest: $(IMAGE_DIGEST)"
+              echo "Referrers for: $(IMAGE_DIGEST)"
+              cosign tree "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/cosign-tree.log || true
+            displayName: 'Debug: cosign tree (show referrers)'
+
+          - script: |
+              mkdir -p output/verify
+              echo "Digest: $(IMAGE_DIGEST)"
               if [ -n "$(COSIGN_KV_KEY)" ]; then
                 echo "Mode: KMS"
                 cosign verify \
@@ -331,7 +338,7 @@ stages:
                   "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-signature.log
               fi
               echo "Signature verified in registry"
-            displayName: 'Verify Signature in Registry'
+            displayName: 'Verify 1/3: Image Signature'
             env:
               AZURE_TENANT_ID: $(AZURE_TENANT_ID)
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
@@ -355,7 +362,7 @@ stages:
                   "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation-sbom.log
               fi
               echo "SBOM attestation verified in registry"
-            displayName: 'Verify SBOM Attestation in Registry'
+            displayName: 'Verify 2/3: SBOM Attestation (cyclonedx)'
             env:
               AZURE_TENANT_ID: $(AZURE_TENANT_ID)
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
@@ -379,7 +386,7 @@ stages:
                   "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation-slsa.log
               fi
               echo "SLSA provenance verified in registry"
-            displayName: 'Verify SLSA Provenance in Registry'
+            displayName: 'Verify 3/3: SLSA Provenance (slsaprovenance)'
             env:
               AZURE_TENANT_ID: $(AZURE_TENANT_ID)
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)

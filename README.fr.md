@@ -45,7 +45,7 @@
 | 13 | **Signer le digest** | `cosign sign --yes` | Signe le **digest registry** (pas le tag) avec Cosign. GitHub Actions utilise le mode **keyless** (OIDC via Sigstore). Azure DevOps utilise **Azure Key Vault KMS** (`azurekms://`) en methode principale avec keyless en fallback. La signature prouve que l'image a ete produite par cette pipeline CI/CD et n'a pas ete alteree. |
 | 14 | **Attester le SBOM** | `cosign attest --type cyclonedx` | Lie cryptographiquement le SBOM au **digest registry** via une attestation In-Toto. Le SBOM atteste est exactement le fichier genere a l'etape 4 — jamais regenere ni modifie (verifie par l'etape 12). C'est la **garantie la plus forte** : elle prouve que CE SBOM decrit exactement CETTE image. |
 | 15 | **Attester la provenance SLSA** | `actions/attest-build-provenance` | Genere et atteste un predicat de provenance [SLSA](https://slsa.dev/) au digest de l'image. Enregistre l'identite du builder, le repo source, la revision et les metadonnees de build. Sur GitHub Actions, utilise l'action native d'attestation ; sur Azure DevOps et en local, un predicat cosign est utilise via `scripts/slsa-provenance.sh`. |
-| 16 | **Verifier dans le registry** | `cosign verify` + `cosign verify-attestation` | Preuve automatisee que la signature et l'attestation sont effectivement recuperables depuis le registry. Detecte les echecs silencieux, un `--no-upload` accidentel, ou des problemes de persistance du registry. **Bloquant** : si la verification echoue, le pipeline s'arrete avant de declarer le succes. |
+| 16 | **Verifier tout dans le registry (fail-closed)** | `cosign verify` + `cosign verify-attestation` x2 | **Fail-closed** : verifie les trois artefacts (signature, attestation SBOM, provenance SLSA) sur le meme digest `image@sha256:...`. Si **l'un** manque ou est invalide, le pipeline s'arrete. Les contraintes d'identite (`--certificate-oidc-issuer` + `--certificate-identity-regexp`) sont appliquees sur chaque verification — y compris la provenance SLSA, qui prouve qui a construit l'image. `cosign tree` est execute en debug pour montrer les referrers. Tous les logs sont archives dans `output/verify/` pour audit. |
 | 17 | **Upload vers Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Envoie le SBOM atteste a Dependency-Track pour le monitoring continu, lie au **digest registry** (pas le SHA git). **Non bloquant** (`continue-on-error`) : DTrack est de la gouvernance/monitoring, pas un gate CI. Si DTrack est indisponible, l'image signee est quand meme deployable. Etape optionnelle (ignoree si `dtrack-hostname` est vide). |
 
 ### Resume visuel
@@ -161,9 +161,25 @@ En mode keyless, `cosign verify` utilise `--certificate-identity-regexp` pour fi
 
 Lors du portage vers votre organisation, c'est la **premiere chose a changer**. Voir [docs/azure-devops-porting.md](docs/azure-devops-porting.md) pour la liste complete.
 
-### Pourquoi la verification post-attestation (etape 15)
+### Pourquoi la verification post-attestation est fail-closed (etape 16)
 
-La signature et l'attestation peuvent echouer silencieusement — un flag `--no-upload`, un probleme reseau, ou un souci de persistance du registry peuvent aboutir a un pipeline qui declare le succes alors que la signature n'a jamais atteint le registry. L'etape 15 execute `cosign verify` et `cosign verify-attestation` contre le registry pour **prouver** que les artefacts sont recuperables. Cette etape est **bloquante** : si la verification echoue, le pipeline s'arrete avant de declarer le succes. La sortie complete est archivee dans `output/verify/` pour la piste d'audit.
+La signature et l'attestation peuvent echouer silencieusement — un flag `--no-upload`, un probleme reseau, ou un souci de persistance du registry peuvent aboutir a un pipeline qui declare le succes alors que la signature n'a jamais atteint le registry. L'etape 16 execute trois verifications separees sur le **meme digest** (`image@sha256:...`, jamais un tag mutable) :
+
+1. `cosign verify` — signature de l'image
+2. `cosign verify-attestation --type cyclonedx` — attestation SBOM
+3. `cosign verify-attestation --type slsaprovenance` — provenance SLSA
+
+**Les trois doivent passer.** Il n'y a pas de mode « au moins une » — si la provenance SLSA manque, le pipeline echoue meme si l'attestation SBOM est presente. C'est delibere : le SBOM prouve **ce qu'il y a** dans l'image, et la provenance SLSA prouve **qui** l'a construite et **a partir de quoi**. Les deux sont necessaires pour une garantie supply chain complete.
+
+Les contraintes d'identite (`--certificate-oidc-issuer` + `--certificate-identity-regexp`) sont appliquees sur **chaque** verification y compris la provenance SLSA — c'est la preuve que le build vient du pipeline CI attendu, pas d'un attaquant avec acces au registry.
+
+Une commande `cosign tree` s'execute en premier (non bloquante, debug) pour afficher tous les referrers (signature + attestations) attaches au digest — utile pour le troubleshooting quand une verification echoue.
+
+Tous les resultats sont archives dans `output/verify/` :
+- `cosign-tree.log` — listing des referrers (debug)
+- `verify-signature.log` — verification de signature
+- `verify-attestation-sbom.log` — attestation SBOM
+- `verify-attestation-slsa.log` — provenance SLSA
 
 ### Pourquoi Dependency-Track est non bloquant
 
@@ -301,7 +317,7 @@ Ce pipeline fournit les garanties verifiables suivantes :
 | **Le SBOM n'a pas ete modifie apres le scan** | SHA256 enregistre a la generation, verifie avant attestation (etape 12) | `FATAL: SBOM was modified` |
 | **Meme binaire entre les stages** (ADO) | `docker save` → artifact → `docker load` + verification ImageID | `Loaded image does not match SBOM` |
 | **Les signatures ciblent des digests immutables** | RepoDigest resolu apres push, fallback sur tag refuse | `Cannot resolve registry digest` |
-| **Les signatures sont effectivement dans le registry** | Post-publication `cosign verify` + `cosign verify-attestation` (etape 15) | Le pipeline s'arrete avant de declarer le succes |
+| **Les 3 artefacts verifies dans le registry (fail-closed)** | `cosign verify` + `verify-attestation --type cyclonedx` + `--type slsaprovenance` sur meme digest (etape 16) | Le pipeline s'arrete si l'un manque |
 | **Seul le pipeline de ce projet peut passer la verif** | `--certificate-identity-regexp` scope a l'org/projet | Signatures d'autres pipelines rejetees |
 | **Le contenu SBOM est lie cryptographiquement a l'image** | Attestation In-Toto via `cosign attest --type cyclonedx` | Falsification de l'attestation detectable |
 | **Toutes les signatures sont publiquement auditables** | Log de transparence Rekor (pas de `--no-upload`) | Verification independante possible |

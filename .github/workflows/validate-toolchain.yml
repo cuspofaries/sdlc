@@ -188,7 +188,7 @@ jobs:
       - name: "Phase 3: Attest SLSA provenance (task slsa:attest)"
         run: task slsa:attest IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
-      - name: "Phase 3: Verify signature + attestation (task sbom:attest:verify)"
+      - name: "Phase 3: Verify all (signature + SBOM + SLSA — fail-closed)"
         run: task sbom:attest:verify IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
       - name: Upload test artifacts

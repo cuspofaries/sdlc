@@ -73,7 +73,6 @@ permissions:
   contents: read
   packages: write
   id-token: write
-  attestations: write
 
 jobs:
   supply-chain:
@@ -294,43 +293,87 @@ jobs:
       # are retrievable from the registry. This is the automated proof
       # that the publish phase actually persisted what it claims.
       - name: Attest SLSA build provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ inputs.image-name }}
-          subject-digest: ${{ steps.digest.outputs.digest }}
-          push-to-registry: true
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          PROVENANCE=$(mktemp)
+          cat > "$PROVENANCE" <<PRED
+          {
+            "builder": {
+              "id": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            },
+            "buildType": "https://slsa.dev/container-based-build/v0.1",
+            "invocation": {
+              "configSource": {
+                "uri": "${{ github.server_url }}/${{ github.repository }}",
+                "digest": { "sha1": "${{ github.sha }}" },
+                "entryPoint": "${{ github.workflow_ref }}"
+              },
+              "parameters": { "event": "${{ github.event_name }}" }
+            },
+            "metadata": {
+              "buildInvocationId": "${{ github.run_id }}",
+              "buildStartedOn": "$TIMESTAMP",
+              "completeness": { "parameters": true, "environment": false, "materials": false }
+            },
+            "materials": [
+              {
+                "uri": "${{ github.server_url }}/${{ github.repository }}",
+                "digest": { "sha1": "${{ github.sha }}" }
+              }
+            ]
+          }
+          PRED
+          echo "Attesting SLSA provenance to: ${{ steps.digest.outputs.image }}"
+          cosign attest --yes \
+            --predicate "$PROVENANCE" \
+            --type slsaprovenance \
+            "${{ steps.digest.outputs.image }}"
+          rm -f "$PROVENANCE"
+        env:
+          COSIGN_EXPERIMENTAL: "1"
 
-      # Post-attestation verification: confirm all three artifacts are
-      # retrievable from the registry (signature + SBOM + SLSA provenance).
-      - name: Verify signature in registry
+      # =====================================================================
+      # VERIFY — fail-closed: all 3 must pass (signature + SBOM + SLSA)
+      # =====================================================================
+      # Identity constraints on every verify:
+      #   --certificate-oidc-issuer      → proves GitHub Actions issued the cert
+      #   --certificate-identity-regexp  → proves which org built it
+      # If ANY verification fails, the pipeline stops before declaring success.
+
+      - name: "Debug: cosign tree (show referrers)"
         run: |
           mkdir -p output/verify
-          echo "Verifying signature for digest: ${{ steps.digest.outputs.image }}"
+          echo "Referrers for: ${{ steps.digest.outputs.image }}"
+          cosign tree "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/cosign-tree.log || true
+
+      - name: "Verify 1/3: Image signature"
+        run: |
+          echo "Digest: ${{ steps.digest.outputs.image }}"
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
             "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-signature.log
-          echo "Signature verified in registry"
+          echo "✅ Signature verified"
 
-      - name: Verify SBOM attestation in registry
+      - name: "Verify 2/3: SBOM attestation (cyclonedx)"
         run: |
-          echo "Verifying SBOM attestation for digest: ${{ steps.digest.outputs.image }}"
+          echo "Digest: ${{ steps.digest.outputs.image }}"
           cosign verify-attestation \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
             --type cyclonedx \
             "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-attestation-sbom.log
-          echo "SBOM attestation verified in registry"
+          echo "✅ SBOM attestation verified"
 
-      - name: Verify SLSA provenance in registry
+      - name: "Verify 3/3: SLSA provenance"
         run: |
-          echo "Verifying SLSA provenance for: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ inputs.image-name }}@${{ steps.digest.outputs.digest }}"
-          gh attestation verify \
-            "oci://${{ inputs.registry }}/${{ github.repository_owner }}/${{ inputs.image-name }}@${{ steps.digest.outputs.digest }}" \
-            --owner "${{ github.repository_owner }}" 2>&1 | tee output/verify/verify-attestation-slsa.log
-          echo "SLSA provenance verified in registry"
-        env:
-          GH_TOKEN: ${{ github.token }}
+          echo "Digest: ${{ steps.digest.outputs.image }}"
+          cosign verify-attestation \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "github.com/cuspofaries/" \
+            --type slsaprovenance \
+            "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-attestation-slsa.log
+          echo "✅ SLSA provenance verified"
 
       # Upload the attested SBOM to Dependency-Track for continuous monitoring.
       # Non-blocking: DTrack is governance/monitoring, not a CI gate.
