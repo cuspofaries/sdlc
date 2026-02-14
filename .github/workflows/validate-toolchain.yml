@@ -166,41 +166,42 @@ jobs:
           sleep 2
 
       - name: Push to local registry
+        id: push-local
         run: |
           docker tag localhost/sdlc-e2e-test:test localhost:5000/sdlc-e2e-test:test
           docker push localhost:5000/sdlc-e2e-test:test
+          # Resolve digest for the local registry (not the build-time localhost/ prefix)
+          DIGEST=$(docker inspect --format='{{range .RepoDigests}}{{.}}{{"\n"}}{{end}}' localhost:5000/sdlc-e2e-test:test | grep "localhost:5000/")
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Resolved digest: ${DIGEST}"
 
       - name: Sign image (keypair)
         run: |
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/sdlc-e2e-test:test)
-          echo "Signing digest: $DIGEST"
-          cosign sign --yes --key cosign.key "$DIGEST" --allow-insecure-registry
+          echo "Signing digest: ${{ steps.push-local.outputs.digest }}"
+          cosign sign --yes --key cosign.key "${{ steps.push-local.outputs.digest }}" --allow-insecure-registry
         env:
           COSIGN_PASSWORD: ""
 
       - name: Attest SBOM (keypair)
         run: |
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/sdlc-e2e-test:test)
-          echo "Attesting SBOM to digest: $DIGEST"
+          echo "Attesting SBOM to digest: ${{ steps.push-local.outputs.digest }}"
           cosign attest --yes \
             --key cosign.key \
             --predicate output/sbom/image/sbom-image-trivy.json \
             --type cyclonedx \
-            "$DIGEST" --allow-insecure-registry
+            "${{ steps.push-local.outputs.digest }}" --allow-insecure-registry
         env:
           COSIGN_PASSWORD: ""
 
       - name: Verify signature (keypair)
         run: |
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/sdlc-e2e-test:test)
-          echo "Verifying signature for digest: $DIGEST"
-          cosign verify --key cosign.pub "$DIGEST" --allow-insecure-registry
+          echo "Verifying signature for digest: ${{ steps.push-local.outputs.digest }}"
+          cosign verify --key cosign.pub "${{ steps.push-local.outputs.digest }}" --allow-insecure-registry
 
       - name: Verify attestation (keypair)
         run: |
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/sdlc-e2e-test:test)
-          echo "Verifying attestation for digest: $DIGEST"
-          cosign verify-attestation --key cosign.pub --type cyclonedx "$DIGEST" --allow-insecure-registry
+          echo "Verifying attestation for digest: ${{ steps.push-local.outputs.digest }}"
+          cosign verify-attestation --key cosign.pub --type cyclonedx "${{ steps.push-local.outputs.digest }}" --allow-insecure-registry
 
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
