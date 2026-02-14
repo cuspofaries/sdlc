@@ -409,6 +409,43 @@ This pipeline provides the following verifiable guarantees:
 
 ---
 
+## Governance / Compliance (CRA, NIS2)
+
+This pipeline is designed to answer auditor questions with documented evidence. Four governance documents complement the technical guarantees above:
+
+| Document | Content | Auditor question it answers |
+|----------|---------|----------------------------|
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting, SLA, coordinated disclosure, safe harbor | "How do stakeholders report a security issue?" |
+| [docs/psirt-policy.md](docs/psirt-policy.md) | Triage workflow, remediation SLA by severity, exception management, RACI | "What is your vulnerability response process?" |
+| [docs/access-governance.md](docs/access-governance.md) | Least privilege model, KMS access, OIDC identity constraints, periodic review | "Who can sign images? How are keys managed?" |
+| [docs/logging-retention.md](docs/logging-retention.md) | Events logged, retention table, integrity guarantees, audit extraction procedure | "What is your log retention? How do you prove integrity?" |
+
+**Key principles across all documents:**
+- **Digest-only** — never sign a mutable tag, never reference a tag as source of truth
+- **Fail-closed** — if a verification fails, the pipeline stops (no degraded mode)
+- **SBOM integrity invariant** — the SBOM is never modified between generation and attestation (SHA256 + ImageID)
+- **KMS > CI keyless > keypair** — signing priority, enforced by all scripts
+- **Double gate for exceptions** — Trivy (`.trivyignore`) + OPA (`security-exceptions.rego`), defense in depth
+
+## Evidence
+
+Every pipeline run produces verifiable artifacts proving compliance:
+
+| Evidence | Location | Verification |
+|----------|----------|-------------|
+| Image signature | Registry referrers | `cosign verify <image>@sha256:...` |
+| SBOM attestation | Registry referrers | `cosign verify-attestation --type cyclonedx <image>@sha256:...` |
+| SLSA provenance | Registry referrers | `cosign verify-attestation --type slsaprovenance <image>@sha256:...` |
+| Referrer listing | Registry | `cosign tree <image>@sha256:...` |
+| Scan results | CI artifacts (`output/`) | Download from pipeline run |
+| OPA policy results | CI artifacts (`output/`) | Download from pipeline run |
+| Verify logs | CI artifacts (`output/verify/`) | `verify-signature.log`, `verify-attestation-sbom.log`, `verify-attestation-slsa.log` |
+| Transparency log | Rekor (public, append-only) | `rekor-cli search --sha sha256:...` |
+| Vulnerability monitoring | Dependency-Track | Dashboard linked to registry digest |
+| Exception audit trail | Git history | `git log -- security-exceptions.yaml` |
+
+---
+
 ## Quick start — consumer repo
 
 Any repo with a Dockerfile can consume this pipeline with a single workflow file:
@@ -613,14 +650,18 @@ sdlc/
 │   ├── security-exceptions.rego      ← Exception validation rules (CRA/NIS2)
 │   └── security-exceptions_test.rego ← Exception tests
 ├── docs/
+│   ├── access-governance.md          ← Access control, KMS, RACI, periodic review
 │   ├── azure-devops-porting.md       ← Porting checklist for Azure DevOps
 │   ├── dependency-track.md
-│   └── dependency-track.fr.md
+│   ├── dependency-track.fr.md
+│   ├── logging-retention.md          ← Log retention, integrity, audit extraction
+│   └── psirt-policy.md               ← Vulnerability response workflow, SLA, exceptions
 ├── docker-compose.dtrack.yml
 ├── Taskfile.yml
 ├── renovate.json
 ├── POSTMORTEM.md
-└── README.md
+├── README.md
+└── SECURITY.md                      ← Vulnerability reporting policy
 ```
 
 ---

@@ -409,6 +409,43 @@ Ce pipeline fournit les garanties verifiables suivantes :
 
 ---
 
+## Gouvernance / Conformite (CRA, NIS2)
+
+Ce pipeline est concu pour repondre aux questions d'auditeurs avec des preuves documentees. Quatre documents de gouvernance completent les garanties techniques ci-dessus :
+
+| Document | Contenu | Question d'auditeur couverte |
+|----------|---------|------------------------------|
+| [SECURITY.md](SECURITY.md) | Signalement de vulnerabilites, SLA, disclosure coordonnee, safe harbor | « Comment signaler une faille de securite ? » |
+| [docs/psirt-policy.md](docs/psirt-policy.md) | Workflow de triage, SLA par severite, gestion des exceptions, RACI | « Quel est votre processus de reponse aux vulnerabilites ? » |
+| [docs/access-governance.md](docs/access-governance.md) | Modele least privilege, acces KMS, contraintes d'identite OIDC, revue periodique | « Qui peut signer les images ? Comment sont gerees les cles ? » |
+| [docs/logging-retention.md](docs/logging-retention.md) | Evenements journalises, table de retention, garanties d'integrite, procedure d'extraction audit | « Quelle est votre retention de logs ? Comment prouver l'integrite ? » |
+
+**Principes cles communs a tous les documents :**
+- **Digest-only** — jamais signer un tag mutable, jamais referencer un tag comme source de verite
+- **Fail-closed** — si une verification echoue, le pipeline s'arrete (pas de mode degrade)
+- **SBOM integrity invariant** — le SBOM n'est jamais modifie entre la generation et l'attestation (SHA256 + ImageID)
+- **KMS > keyless CI > keypair** — priorite de signature, appliquee par tous les scripts
+- **Double gate pour les exceptions** — Trivy (`.trivyignore`) + OPA (`security-exceptions.rego`), defense en profondeur
+
+## Evidence
+
+Chaque run de pipeline produit des artefacts verifiables prouvant la conformite :
+
+| Preuve | Emplacement | Verification |
+|--------|-------------|-------------|
+| Signature de l'image | Registry referrers | `cosign verify <image>@sha256:...` |
+| Attestation SBOM | Registry referrers | `cosign verify-attestation --type cyclonedx <image>@sha256:...` |
+| Provenance SLSA | Registry referrers | `cosign verify-attestation --type slsaprovenance <image>@sha256:...` |
+| Liste des referrers | Registry | `cosign tree <image>@sha256:...` |
+| Resultats de scan | CI artifacts (`output/`) | Telecharger depuis le pipeline run |
+| Resultats OPA | CI artifacts (`output/`) | Telecharger depuis le pipeline run |
+| Logs de verification | CI artifacts (`output/verify/`) | `verify-signature.log`, `verify-attestation-sbom.log`, `verify-attestation-slsa.log` |
+| Log de transparence | Rekor (public, append-only) | `rekor-cli search --sha sha256:...` |
+| Monitoring vulnerabilites | Dependency-Track | Dashboard lie au digest registry |
+| Piste d'audit exceptions | Historique git | `git log -- security-exceptions.yaml` |
+
+---
+
 ## Démarrage rapide — repo consommateur
 
 Tout repo avec un Dockerfile peut consommer ce pipeline avec un seul fichier workflow :
@@ -613,14 +650,18 @@ sdlc/
 │   ├── security-exceptions.rego      ← Regles de validation des exceptions (CRA/NIS2)
 │   └── security-exceptions_test.rego ← Tests des exceptions
 ├── docs/
+│   ├── access-governance.md          ← Controles d'acces, KMS, RACI, revue periodique
 │   ├── azure-devops-porting.md       ← Checklist de portage Azure DevOps
 │   ├── dependency-track.md
-│   └── dependency-track.fr.md
+│   ├── dependency-track.fr.md
+│   ├── logging-retention.md          ← Retention des logs, integrite, extraction audit
+│   └── psirt-policy.md               ← Workflow de reponse aux vulnerabilites, SLA, exceptions
 ├── docker-compose.dtrack.yml
 ├── Taskfile.yml
 ├── renovate.json
 ├── POSTMORTEM.md
-└── README.md
+├── README.md
+└── SECURITY.md                      ← Politique de signalement de vulnerabilites
 ```
 
 ---
