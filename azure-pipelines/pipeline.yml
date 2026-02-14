@@ -81,6 +81,14 @@ stages:
           - script: task sbom:policy
             displayName: 'OPA Policy Check'
 
+          # Save image as tar for next stage (guarantees same image is pushed)
+          - script: |
+              IMAGE="$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
+              mkdir -p output/image
+              docker save "$IMAGE" -o output/image/image.tar
+              echo "Image saved: $(du -h output/image/image.tar | cut -f1)"
+            displayName: 'Save Image Tar'
+
           # Publish outputs for next stage
           - task: PublishBuildArtifacts@1
             displayName: 'Publish SBOM Outputs'
@@ -134,9 +142,11 @@ stages:
               cp -r sbom-outputs/* output/ 2>/dev/null || true
             displayName: 'Restore SBOM Outputs'
 
-          # Rebuild image (needed for push — build cache makes this fast)
-          - script: task build IMAGE_TAG=$(IMAGE_TAG)
-            displayName: 'Rebuild Image (from cache)'
+          # Load the exact same image that was scanned (no rebuild)
+          - script: |
+              docker load -i output/image/image.tar
+              echo "Image loaded: $(docker images --format '{{.Repository}}:{{.Tag}}' | head -1)"
+            displayName: 'Load Scanned Image'
 
           # Push
           - script: task push IMAGE_TAG=$(IMAGE_TAG)
