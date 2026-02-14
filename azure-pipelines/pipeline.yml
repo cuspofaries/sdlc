@@ -231,13 +231,36 @@ stages:
             displayName: 'Push Image to Registry'
 
           # Resolve registry digest (RepoDigest) after push
+          # Priority: docker inspect (local metadata) → az acr (registry API) → FAIL
+          # Never fall back to a mutable tag — cosign must sign an immutable digest.
           - script: |
               IMAGE="$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
+              DIGEST=""
+
+              # Attempt 1: docker inspect (fastest, uses local push metadata)
               DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE" 2>/dev/null || true)
-              if [ -z "$DIGEST" ]; then
-                echo "##vso[task.logissue type=warning]Could not resolve RepoDigest, falling back to tag"
-                DIGEST="$IMAGE"
+              if [ -n "$DIGEST" ]; then
+                echo "Digest resolved via docker inspect"
+              else
+                echo "docker inspect failed, querying ACR API..."
+
+                # Attempt 2: az acr repository show (queries registry directly)
+                ACR_DIGEST=$(az acr repository show \
+                  --name "$(ACR_NAME)" \
+                  --image "$(IMAGE_NAME):$(IMAGE_TAG)" \
+                  --query "digest" -o tsv 2>/dev/null || true)
+
+                if [ -n "$ACR_DIGEST" ]; then
+                  DIGEST="$(REGISTRY)/$(IMAGE_NAME)@${ACR_DIGEST}"
+                  echo "Digest resolved via az acr"
+                fi
               fi
+
+              if [ -z "$DIGEST" ]; then
+                echo "##vso[task.logissue type=error]Cannot resolve registry digest — refusing to sign a mutable tag"
+                exit 1
+              fi
+
               echo "##vso[task.setvariable variable=IMAGE_DIGEST]$DIGEST"
               echo "Registry digest: $DIGEST"
             displayName: 'Get Registry Digest'
