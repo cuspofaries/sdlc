@@ -73,13 +73,13 @@ COSIGN_ARGS=(attest --yes --predicate "$PROVENANCE_FILE" --type slsaprovenance)
 if [ -n "${COSIGN_KMS_KEY:-}" ]; then
   echo "Attesting with KMS key..."
   cosign "${COSIGN_ARGS[@]}" --key "azurekms://${COSIGN_KMS_KEY}" "$DIGEST"
-elif cosign attest --yes --predicate "$PROVENANCE_FILE" --type slsaprovenance "$DIGEST" 2>/dev/null; then
-  echo "Attested with keyless (OIDC)"
 elif [ -f "$COSIGN_KEY" ]; then
   echo "Attesting with keypair..."
   cosign "${COSIGN_ARGS[@]}" --key "$COSIGN_KEY" "$DIGEST"
+elif cosign "${COSIGN_ARGS[@]}" "$DIGEST" 2>/dev/null; then
+  echo "Attested with keyless (OIDC)"
 else
-  echo "FATAL: No signing method available (no KMS, no OIDC, no keypair)" >&2
+  echo "FATAL: No signing method available (no KMS, no keypair, no OIDC)" >&2
   rm -f "$PROVENANCE_FILE"
   exit 1
 fi
