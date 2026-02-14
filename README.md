@@ -36,14 +36,15 @@ Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a s
 
 | # | Step | Tool | Explanation |
 |---|------|------|-------------|
-| 4 | **Generate SBOM** | `trivy image --format cyclonedx` | Scans the local image and produces a full inventory (OS packages, libraries, versions, licenses) in CycloneDX JSON format. The SBOM answers: "what is actually inside my container?" |
-| 5 | **Scan vulnerabilities** | `trivy image --exit-code` | Scans the image **directly** (not the SBOM) for HIGH and CRITICAL CVEs. Uses `--exit-code 1` to block or `0` to warn without blocking. Direct image scan is more reliable than scanning the SBOM because Trivy accesses filesystem metadata. |
-| 6 | **Scan SBOM** | `trivy sbom --exit-code 0` | Scans the SBOM itself for vulnerabilities (advisory, non-blocking). This ensures the attested SBOM has been verified: what we sign = what we scanned. Any delta with step 5 reveals SBOM inventory gaps. |
-| 7 | **Evaluate OPA policies** | `opa eval` | Evaluates the SBOM against Rego rules at two levels: **deny** (blocking — fails the pipeline) and **warn** (advisory — displays a warning). Baseline policies (`sdlc/policies/`) are automatically merged with custom policies from the app repo (`policies/`) if they exist. Example rules: blocked packages (known supply chain attacks), components without versions, unapproved licenses. |
+| 4 | **Generate SBOM** | `trivy image --format cyclonedx` | Scans the local image and produces a full inventory (OS packages, libraries, versions, licenses) in CycloneDX JSON format. The SBOM SHA256 hash and the image ID (`aquasecurity:trivy:ImageID`) are recorded at this point for integrity verification before attestation. |
+| 5 | **Verify image-SBOM alignment** | `docker inspect` + `jq` | Compares the actual Docker image ID with the image ID embedded in the SBOM. If they differ, the pipeline stops immediately — the SBOM must describe the exact image that was built. |
+| 6 | **Scan vulnerabilities** | `trivy image --exit-code` | Scans the image **directly** (not the SBOM) for HIGH and CRITICAL CVEs. Uses `--exit-code 1` to block or `0` to warn without blocking. Direct image scan is the **security gate**: more reliable than scanning the SBOM because Trivy accesses filesystem metadata. |
+| 7 | **Scan SBOM** | `trivy sbom --exit-code 0` | Scans the SBOM itself for vulnerabilities (advisory, **non-blocking**). This ensures the attested SBOM has been verified: what we sign = what we scanned. Any delta with step 6 reveals SBOM inventory gaps. Results are archived regardless of outcome. |
+| 8 | **Evaluate OPA policies** | `opa eval` | Evaluates the SBOM against Rego rules at two levels: **deny** (blocking — fails the pipeline) and **warn** (advisory — displays a warning). Baseline policies (`sdlc/policies/`) are automatically merged with custom policies from the app repo (`policies/`) if they exist. Example rules: blocked packages (known supply chain attacks), components without versions, unapproved licenses. |
 
 ```
 ══════════════════════════════════════════════════════
-  GATE: if step 5 or 7 fails → PIPELINE STOPS
+  GATE: if step 5, 6 or 8 fails → PIPELINE STOPS
   Nothing is published. The image stays local.
 ══════════════════════════════════════════════════════
 ```
@@ -52,11 +53,13 @@ Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a s
 
 | # | Step | Tool | Explanation |
 |---|------|------|-------------|
-| 8 | **Login to registry** | `docker/login-action` | Authenticates to the container registry (GHCR, ACR, etc.) with the provided token. |
-| 9 | **Push image** | `docker push` | Pushes the image to the registry. At this point, we know it passed scanning and policies. |
-| 10 | **Sign digest** | `cosign sign --yes` | Signs the image digest with Cosign in **keyless** mode (OIDC via Sigstore). The signature proves the image was produced by this CI/CD pipeline and has not been tampered with. Verifiable by anyone with `cosign verify`. |
-| 11 | **Attest SBOM** | `cosign attest --type cyclonedx` | Cryptographically binds the SBOM to the image digest via an In-Toto attestation. This is the **strongest guarantee**: it proves that THIS SBOM describes exactly THIS image. The attestation is stored in the registry alongside the image. |
-| 12 | **Upload to Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Sends the SBOM to Dependency-Track for continuous monitoring. DTrack receives new CVEs daily and alerts if a component in your image becomes vulnerable, even without a rebuild. Optional step (skipped if `dtrack-hostname` is empty). |
+| 9 | **Login to registry** | `docker/login-action` | Authenticates to the container registry (GHCR, ACR, etc.) with the provided token. |
+| 10 | **Push image** | `docker push` | Pushes the image to the registry. At this point, we know it passed scanning and policies. |
+| 11 | **Resolve registry digest** | `docker inspect` | Retrieves the **RepoDigest** (`sha256:...`) from the registry after push. All subsequent signing and attestation operations target this immutable digest, not the mutable tag. |
+| 12 | **Verify SBOM integrity** | `sha256sum` | Recomputes the SHA256 of the SBOM file and compares it to the hash recorded at generation (step 4). If the file was modified between generation and attestation, the pipeline stops. |
+| 13 | **Sign digest** | `cosign sign --yes` | Signs the **registry digest** (not the tag) with Cosign. GitHub Actions uses **keyless** mode (OIDC via Sigstore). Azure DevOps uses **Azure Key Vault KMS** (`azurekms://`) as primary method with keyless as fallback. The signature proves the image was produced by this CI/CD pipeline and has not been tampered with. |
+| 14 | **Attest SBOM** | `cosign attest --type cyclonedx` | Cryptographically binds the SBOM to the **registry digest** via an In-Toto attestation. The SBOM attested is the exact same file generated in step 4 — never regenerated or modified (verified by step 12). This is the **strongest guarantee**: it proves that THIS SBOM describes exactly THIS image. |
+| 15 | **Upload to Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Sends the attested SBOM to Dependency-Track for continuous monitoring, linked to the **registry digest** (not the git SHA). **Non-blocking** (`continue-on-error`): DTrack is governance/monitoring, not a CI gate. If DTrack is down, the signed image still ships. Optional (skipped if `dtrack-hostname` is empty). |
 
 ### Visual summary
 
@@ -67,33 +70,44 @@ Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a s
   [1-3] BUILD ──────────────> Local image
         |
         v
-  [4]   SBOM ──────────────> sbom-image-trivy.json
+  [4]   SBOM ──────────────> sbom-image-trivy.json + SHA256 + ImageID
         |
         v
-  [5]   SCAN (trivy image) ─> HIGH/CRITICAL vulnerabilities?
+  [5]   IMAGE ↔ SBOM ─────> ImageID match?
+        |                         |
+        | OK                      | MISMATCH → STOP
+        v
+  [6]   SCAN (trivy image) ─> HIGH/CRITICAL vulnerabilities?
         |                         |
         | OK                      | FAIL → STOP
         v
-  [6]   SCAN SBOM (trivy sbom) ─> Advisory (governance alignment)
+  [7]   SCAN SBOM (trivy sbom) ─> Advisory (governance, archived)
         |
         v
-  [7]   POLICY (OPA) ──────> deny / warn?
+  [8]   POLICY (OPA) ──────> deny / warn?
         |                         |
         | OK                      | FAIL → STOP
         v
   ═══ GATE PASSED ═══
         |
         v
-  [8-9] PUSH ──────────────> Image in registry
+  [9-10] PUSH ─────────────> Image in registry
         |
         v
-  [10]  SIGN ──────────────> Cosign signature (keyless)
+  [11]  RESOLVE DIGEST ────> RepoDigest (sha256:...)
         |
         v
-  [11]  ATTEST ────────────> SBOM bound to digest (In-Toto)
+  [12]  VERIFY SBOM SHA256 ─> Untouched since step 4?
+        |                         |
+        | OK                      | MODIFIED → STOP
+        v
+  [13]  SIGN ──────────────> Cosign signature on digest
         |
         v
-  [12]  DTRACK ────────────> Continuous CVE monitoring
+  [14]  ATTEST ────────────> SBOM bound to digest (In-Toto)
+        |
+        v
+  [15]  DTRACK ────────────> Monitoring (non-blocking, linked to digest)
 ```
 
 ---
