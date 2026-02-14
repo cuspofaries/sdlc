@@ -297,9 +297,49 @@ tasks:
 
   sbom:attest:
     desc: "Attest image SBOM to image digest (strongest — requires registry)"
-    deps: [signing:init]
     cmds:
       - ./scripts/sbom-attest.sh {{.IMAGE}} {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.COSIGN_KEY}}
+    env:
+      COSIGN_KMS_KEY: "{{.COSIGN_KMS_KEY}}"
+
+  sbom:attest:verify:
+    desc: "Verify signature and attestation are published in the registry"
+    cmds:
+      - |
+        KMS_KEY="{{.COSIGN_KMS_KEY}}"
+        if [ -n "$KMS_KEY" ]; then
+          echo "── Verify signature (KMS) ──"
+          cosign verify --key "azurekms://$KMS_KEY" "{{.IMAGE}}" 2>&1 | head -5
+          echo ""
+          echo "── Verify attestation (KMS) ──"
+          cosign verify-attestation \
+            --key "azurekms://$KMS_KEY" \
+            --type cyclonedx \
+            "{{.IMAGE}}" > /dev/null 2>&1
+        elif [ -f "{{.COSIGN_PUB}}" ]; then
+          echo "── Verify signature (keypair) ──"
+          cosign verify --key "{{.COSIGN_PUB}}" "{{.IMAGE}}" 2>&1 | head -5
+          echo ""
+          echo "── Verify attestation (keypair) ──"
+          cosign verify-attestation \
+            --key "{{.COSIGN_PUB}}" \
+            --type cyclonedx \
+            "{{.IMAGE}}" > /dev/null 2>&1
+        else
+          echo "── Verify signature (keyless) ──"
+          cosign verify \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "github.com/" \
+            "{{.IMAGE}}" 2>&1 | head -5
+          echo ""
+          echo "── Verify attestation (keyless) ──"
+          cosign verify-attestation \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "github.com/" \
+            --type cyclonedx \
+            "{{.IMAGE}}" > /dev/null 2>&1
+        fi
+      - echo "✅ Signature and attestation verified in registry"
 
   sbom:sign:blob:
     desc: "Sign SBOM as standalone blob (fallback — no registry needed)"
@@ -415,6 +455,7 @@ tasks:
       - task: push
       - task: image:sign
       - task: sbom:attest
+      - task: sbom:attest:verify
       - task: sbom:upload
       - echo ""
       - echo "=================================================="

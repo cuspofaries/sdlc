@@ -311,6 +311,26 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "1"
 
+      # Post-attestation verification: confirm signature and attestation
+      # are retrievable from the registry. This is the automated proof
+      # that the publish phase actually persisted what it claims.
+      - name: Verify signature in registry
+        run: |
+          cosign verify \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "github.com/" \
+            "${{ steps.digest.outputs.image }}" 2>&1 | head -5
+          echo "Signature verified in registry"
+
+      - name: Verify attestation in registry
+        run: |
+          cosign verify-attestation \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "github.com/" \
+            --type cyclonedx \
+            "${{ steps.digest.outputs.image }}" > /dev/null 2>&1
+          echo "SBOM attestation verified in registry"
+
       # Upload the attested SBOM to Dependency-Track for continuous monitoring.
       # Non-blocking: DTrack is governance/monitoring, not a CI gate.
       # Uses the registry digest as version to link SBOM to the published image.

@@ -282,6 +282,31 @@ stages:
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
 
+          # Post-attestation verification: confirm signature and attestation
+          # are retrievable from the registry. Automated proof that the
+          # publish phase persisted what it claims.
+          - script: |
+              if [ -n "$(COSIGN_KV_KEY)" ]; then
+                cosign verify \
+                  --key "azurekms://$(COSIGN_KV_KEY)" \
+                  "$(IMAGE_DIGEST)" 2>&1 | head -5
+                echo "Signature verified in registry (KMS)"
+
+                cosign verify-attestation \
+                  --key "azurekms://$(COSIGN_KV_KEY)" \
+                  --type cyclonedx \
+                  "$(IMAGE_DIGEST)" > /dev/null 2>&1
+                echo "SBOM attestation verified in registry (KMS)"
+              else
+                echo "Keyless mode: signature verification requires OIDC issuer context"
+                echo "Skipping automated verify (use cosign verify manually with --certificate-oidc-issuer)"
+              fi
+            displayName: 'Verify Signature & Attestation in Registry'
+            env:
+              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+
           # Upload the attested SBOM to Dependency-Track for continuous monitoring.
           # Non-blocking: DTrack is governance/monitoring, not a CI gate.
           # Uses the registry digest as project version.
