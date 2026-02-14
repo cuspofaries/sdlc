@@ -306,18 +306,20 @@ stages:
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
 
           # Post-sign verification: confirm signature is retrievable from registry
+          # Full output archived in output/verify/ for audit trail.
           - script: |
+              mkdir -p output/verify
               if [ -n "$(COSIGN_KV_KEY)" ]; then
                 echo "Verifying signature (KMS)..."
                 cosign verify \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
-                  "$(IMAGE_DIGEST)" 2>&1 | head -5
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-signature.json
               else
                 echo "Verifying signature (keyless)..."
                 cosign verify \
                   --certificate-oidc-issuer https://vstoken.dev.azure.com \
                   --certificate-identity-regexp "https://dev.azure.com/cuspofaries/" \
-                  "$(IMAGE_DIGEST)" 2>&1 | head -5
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-signature.json
               fi
               echo "Signature verified in registry"
             displayName: 'Verify Signature in Registry'
@@ -333,14 +335,14 @@ stages:
                 cosign verify-attestation \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   --type cyclonedx \
-                  "$(IMAGE_DIGEST)" > /dev/null 2>&1
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation.json
               else
                 echo "Verifying attestation (keyless)..."
                 cosign verify-attestation \
                   --certificate-oidc-issuer https://vstoken.dev.azure.com \
                   --certificate-identity-regexp "https://dev.azure.com/cuspofaries/" \
                   --type cyclonedx \
-                  "$(IMAGE_DIGEST)" > /dev/null 2>&1
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation.json
               fi
               echo "SBOM attestation verified in registry"
             displayName: 'Verify Attestation in Registry'

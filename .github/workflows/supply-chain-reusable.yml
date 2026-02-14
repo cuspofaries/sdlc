@@ -316,10 +316,11 @@ jobs:
       # that the publish phase actually persisted what it claims.
       - name: Verify signature in registry
         run: |
+          mkdir -p output/verify
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
-            "${{ steps.digest.outputs.image }}" 2>&1 | head -5
+            "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-signature.json
           echo "Signature verified in registry"
 
       - name: Verify attestation in registry
@@ -328,7 +329,7 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
             --type cyclonedx \
-            "${{ steps.digest.outputs.image }}" > /dev/null 2>&1
+            "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-attestation.json
           echo "SBOM attestation verified in registry"
 
       # Upload the attested SBOM to Dependency-Track for continuous monitoring.

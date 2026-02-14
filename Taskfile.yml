@@ -305,11 +305,12 @@ tasks:
   sbom:attest:verify:
     desc: "Verify signature and attestation are published in the registry"
     cmds:
+      - mkdir -p {{.SCAN_DIR}}
       - |
         KMS_KEY="{{.COSIGN_KMS_KEY}}"
         if [ -n "$KMS_KEY" ]; then
           echo "── Verify signature (KMS) ──"
-          cosign verify --key "azurekms://$KMS_KEY" "{{.IMAGE}}" 2>&1 | head -5
+          cosign verify --key "azurekms://$KMS_KEY" "{{.IMAGE}}" 2>&1 | tee {{.SCAN_DIR}}/verify-signature.json
           echo ""
           echo "── Verify attestation (KMS) ──"
           cosign verify-attestation \
@@ -318,7 +319,7 @@ tasks:
             "{{.IMAGE}}" > /dev/null 2>&1
         elif [ -f "{{.COSIGN_PUB}}" ]; then
           echo "── Verify signature (keypair) ──"
-          cosign verify --key "{{.COSIGN_PUB}}" "{{.IMAGE}}" 2>&1 | head -5
+          cosign verify --key "{{.COSIGN_PUB}}" "{{.IMAGE}}" 2>&1 | tee {{.SCAN_DIR}}/verify-signature.json
           echo ""
           echo "── Verify attestation (keypair) ──"
           cosign verify-attestation \
@@ -330,7 +331,7 @@ tasks:
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
-            "{{.IMAGE}}" 2>&1 | head -5
+            "{{.IMAGE}}" 2>&1 | tee {{.SCAN_DIR}}/verify-signature.json
           echo ""
           echo "── Verify attestation (keyless) ──"
           cosign verify-attestation \
