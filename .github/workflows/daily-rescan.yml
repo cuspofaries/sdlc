@@ -136,10 +136,12 @@ jobs:
           SBOM_EXTRACTED=false
 
           # Extract SBOM from cosign attestation (cryptographic source of truth)
+          # --output json locks the output format to avoid future breaking changes
           cosign verify-attestation \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
             --type cyclonedx \
+            --output json \
             "${IMAGE}" 2>/dev/null \
             | jq -r '.payload' | base64 -d \
             | jq -r '.predicate' \

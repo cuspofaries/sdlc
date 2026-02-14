@@ -44,8 +44,9 @@
 | 12 | **Verifier l'integrite du SBOM** | `sha256sum` | Recalcule le SHA256 du fichier SBOM et le compare au hash enregistre a la generation (etape 4). Si le fichier a ete modifie entre la generation et l'attestation, le pipeline s'arrete. |
 | 13 | **Signer le digest** | `cosign sign --yes` | Signe le **digest registry** (pas le tag) avec Cosign. GitHub Actions utilise le mode **keyless** (OIDC via Sigstore). Azure DevOps utilise **Azure Key Vault KMS** (`azurekms://`) en methode principale avec keyless en fallback. La signature prouve que l'image a ete produite par cette pipeline CI/CD et n'a pas ete alteree. |
 | 14 | **Attester le SBOM** | `cosign attest --type cyclonedx` | Lie cryptographiquement le SBOM au **digest registry** via une attestation In-Toto. Le SBOM atteste est exactement le fichier genere a l'etape 4 — jamais regenere ni modifie (verifie par l'etape 12). C'est la **garantie la plus forte** : elle prouve que CE SBOM decrit exactement CETTE image. |
-| 15 | **Verifier dans le registry** | `cosign verify` + `cosign verify-attestation` | Preuve automatisee que la signature et l'attestation sont effectivement recuperables depuis le registry. Detecte les echecs silencieux, un `--no-upload` accidentel, ou des problemes de persistance du registry. **Bloquant** : si la verification echoue, le pipeline s'arrete avant de declarer le succes. |
-| 16 | **Upload vers Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Envoie le SBOM atteste a Dependency-Track pour le monitoring continu, lie au **digest registry** (pas le SHA git). **Non bloquant** (`continue-on-error`) : DTrack est de la gouvernance/monitoring, pas un gate CI. Si DTrack est indisponible, l'image signee est quand meme deployable. Etape optionnelle (ignoree si `dtrack-hostname` est vide). |
+| 15 | **Attester la provenance SLSA** | `actions/attest-build-provenance` | Genere et atteste un predicat de provenance [SLSA](https://slsa.dev/) au digest de l'image. Enregistre l'identite du builder, le repo source, la revision et les metadonnees de build. Sur GitHub Actions, utilise l'action native d'attestation ; sur Azure DevOps et en local, un predicat cosign est utilise via `scripts/slsa-provenance.sh`. |
+| 16 | **Verifier dans le registry** | `cosign verify` + `cosign verify-attestation` | Preuve automatisee que la signature et l'attestation sont effectivement recuperables depuis le registry. Detecte les echecs silencieux, un `--no-upload` accidentel, ou des problemes de persistance du registry. **Bloquant** : si la verification echoue, le pipeline s'arrete avant de declarer le succes. |
+| 17 | **Upload vers Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Envoie le SBOM atteste a Dependency-Track pour le monitoring continu, lie au **digest registry** (pas le SHA git). **Non bloquant** (`continue-on-error`) : DTrack est de la gouvernance/monitoring, pas un gate CI. Si DTrack est indisponible, l'image signee est quand meme deployable. Etape optionnelle (ignoree si `dtrack-hostname` est vide). |
 
 ### Resume visuel
 
@@ -90,14 +91,17 @@
   [13]  SIGN ──────────────> Signature Cosign sur digest
         |
         v
-  [14]  ATTEST ────────────> SBOM lie au digest (In-Toto)
+  [14]  ATTEST SBOM ───────> SBOM lie au digest (In-Toto)
         |
         v
-  [15]  VERIFY ────────────> Signature + attestation dans le registry ?
+  [15]  ATTEST SLSA ───────> Provenance de build liee au digest
+        |
+        v
+  [16]  VERIFY ────────────> Signature + attestation dans le registry ?
         |                         |
         | OK                      | FAIL → STOP
         v
-  [16]  DTRACK ────────────> Monitoring (non bloquant, lie au digest)
+  [17]  DTRACK ────────────> Monitoring (non bloquant, lie au digest)
 ```
 
 ---
@@ -249,6 +253,33 @@ Non relaxe (identique a la prod) : `TRIVY_EXIT_CODE=1`, `TRIVY_SEVERITY=HIGH,CRI
 
 **Regle : chaque relaxation doit repondre a POURQUOI elle est inevitable et OU le comportement reel est teste. Sans les deux reponses, on ne relaxe pas.**
 
+### Provenance SLSA de build
+
+[SLSA](https://slsa.dev/) (Supply chain Levels for Software Artifacts) enregistre **qui** a construit une image, a partir de **quelle** source, et **comment**. Le pipeline atteste un predicat de provenance SLSA au digest de l'image en plus de l'attestation SBOM :
+
+- **GitHub Actions** : Utilise `actions/attest-build-provenance@v2` (attestation native GitHub, stockee dans le package registry).
+- **Azure DevOps / local** : Utilise `scripts/slsa-provenance.sh` qui genere un predicat SLSA v1.0 (ID du builder, repo source, revision, URL du build) et l'atteste via cosign avec la meme priorite KMS > keyless > keypair.
+
+Cela fournit une chaine verifiable depuis l'image publiee jusqu'au commit source exact et au run CI qui l'a produite.
+
+### Versionnage semantique
+
+Le toolchain utilise le [versionnage semantique](https://semver.org/) via des tags git (`v1.0.0`, `v1.2.3`). Pousser un tag de version declenche le workflow `release.yml` qui :
+
+1. Valide le format du tag (`vX.Y.Z`)
+2. Genere un changelog depuis l'historique des commits
+3. Cree une GitHub Release
+4. Met a jour un tag majeur flottant (`v1`) pointant vers le dernier `v1.x.y`
+
+Les repos consommateurs peuvent pinner a :
+- `@v1` — mises a jour mineures/patch automatiques (recommande)
+- `@v1.2.0` — version exacte (reproductibilite maximale)
+- `@main` — derniere version de developpement (non recommande pour la production)
+
+### Tests unitaires OPA
+
+Les politiques OPA baseline sont couvertes par des tests unitaires dans `policies/sbom-compliance_test.rego` (executes via `task opa:test` ou `opa test policies/ -v`). Les tests verifient les regles deny et warn en utilisant `json.patch`/`json.remove` sur un SBOM valide minimal. Le CI `validate-toolchain.yml` execute ces tests a chaque push.
+
 ### Output du workflow pour la consommation downstream
 
 Le workflow reutilisable GitHub Actions expose un output `image` contenant la **reference complete de l'image avec digest** (`registry/owner/name@sha256:...`). Les jobs en aval peuvent utiliser cet output pour deployer, scanner ou referencer l'image exacte qui a ete construite, signee et attestee — sans avoir besoin de resoudre le digest eux-memes.
@@ -270,6 +301,7 @@ Ce pipeline fournit les garanties verifiables suivantes :
 | **Seul le pipeline de ce projet peut passer la verif** | `--certificate-identity-regexp` scope a l'org/projet | Signatures d'autres pipelines rejetees |
 | **Le contenu SBOM est lie cryptographiquement a l'image** | Attestation In-Toto via `cosign attest --type cyclonedx` | Falsification de l'attestation detectable |
 | **Toutes les signatures sont publiquement auditables** | Log de transparence Rekor (pas de `--no-upload`) | Verification independante possible |
+| **La provenance de build est attestee** | Predicat de provenance SLSA atteste au digest de l'image | Builder, source et revision lies cryptographiquement |
 | **Les packages dangereux connus sont bloques** | Regles OPA `deny` (baseline + custom) | `POLICY CHECK FAILED` |
 | **Les licences copyleft sont detectees** | OPA `deny` pour GPL/AGPL/SSPL dans les librairies applicatives (warn pour packages OS) | `Copyleft license ... incompatible` |
 | **Les specs SBOM obsoletes sont rejetees** | OPA `deny` pour CycloneDX < 1.4 | `spec version too old` |
@@ -300,7 +332,7 @@ permissions:
 
 jobs:
   supply-chain:
-    uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@main
+    uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@v1
     with:
       context: ./app
       image-name: my-app
@@ -309,6 +341,8 @@ jobs:
       REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       DTRACK_API_KEY: ${{ secrets.DTRACK_API_KEY }}  # optionnel
 ```
+
+Pinner a `@v1` pour les mises a jour mineures/patch automatiques, ou `@v1.2.0` pour un pinning exact.
 
 ### Inputs
 
@@ -389,10 +423,12 @@ task pipeline \
 | `sbom:scan` | Scanner l'image pour les vulnérabilités (trivy image — gate sécurité) |
 | `sbom:scan:sbom` | Scanner le SBOM pour les vulnérabilités (trivy sbom — gouvernance, consultatif) |
 | `sbom:policy` | Évaluer le SBOM contre les politiques OPA |
+| `opa:test` | Executer les tests unitaires OPA sur les regles de politique |
 | `push` | Push de l'image vers le registry |
 | `image:sign` | Signer le digest de l'image (cosign) |
 | `image:verify` | Vérifier la signature de l'image |
 | `sbom:attest` | Attester le SBOM au digest de l'image |
+| `slsa:attest` | Attester la provenance SLSA de build au digest de l'image |
 | `sbom:attest:verify` | Verifier que la signature et l'attestation sont publiees dans le registry |
 | `sbom:sign:blob` | Signer le SBOM comme fichier standalone |
 | `sbom:verify` | Vérifier la signature et l'intégrité du SBOM |
@@ -453,7 +489,8 @@ sdlc/
 ├── .github/workflows/
 │   ├── supply-chain-reusable.yml     ← Workflow unifié (consommé par les repos app)
 │   ├── daily-rescan.yml              ← Rescan planifié avec les dernières données CVE
-│   └── validate-toolchain.yml        ← CI + test end-to-end du pipeline
+│   ├── validate-toolchain.yml        ← CI + test end-to-end du pipeline
+│   └── release.yml                   ← Versionnage sémantique (tag → GitHub Release)
 ├── azure-pipelines/
 │   └── pipeline.yml                  ← Template Azure DevOps
 ├── scripts/                          ← Scripts shell (Taskfile orchestre, scripts font le travail)
@@ -466,9 +503,11 @@ sdlc/
 │   ├── sbom-sign.sh
 │   ├── sbom-tamper-test.sh
 │   ├── sbom-upload-dtrack.sh
-│   └── sbom-verify.sh
+│   ├── sbom-verify.sh
+│   └── slsa-provenance.sh
 ├── policies/
-│   └── sbom-compliance.rego          ← Politiques OPA baseline
+│   ├── sbom-compliance.rego          ← Politiques OPA baseline
+│   └── sbom-compliance_test.rego     ← Tests unitaires OPA
 ├── docs/
 │   ├── azure-devops-porting.md       ← Checklist de portage Azure DevOps
 │   ├── dependency-track.md
@@ -500,7 +539,7 @@ jobs:
 ```yaml
 jobs:
   supply-chain:
-    uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@main
+    uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@v1
     with:
       context: ./app
       image-name: my-app

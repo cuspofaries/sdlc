@@ -16,19 +16,15 @@
   },
 
   "osvVulnerabilityAlerts": true,
-
   "separateMinorPatch": true,
   "prConcurrentLimit": 5,
   "prHourlyLimit": 2,
 
   "packageRules": [
     {
-      "description": "Auto-merge patch updates for stable packages",
-      "matchUpdateTypes": ["patch", "pin", "digest"],
-      "matchCurrentVersion": "!/^0/",
-      "automerge": true,
-      "automergeType": "pr",
-      "platformAutomerge": true
+      "description": "Never auto-merge — all PRs require human review",
+      "matchPackagePatterns": ["*"],
+      "automerge": false
     },
     {
       "description": "Group all Docker updates",
@@ -44,15 +40,36 @@
     {
       "description": "Flag major updates for manual review",
       "matchUpdateTypes": ["major"],
-      "automerge": false,
       "labels": ["dependencies", "major-update", "manual-review"]
     },
     {
-      "description": "Security updates bypass schedule",
+      "description": "Security updates bypass schedule (still require review)",
       "matchCategories": ["security"],
       "schedule": ["at any time"],
-      "automerge": true,
       "prPriority": 10
+    },
+    {
+      "description": "Group all pinned tool version updates",
+      "matchManagers": ["custom.regex"],
+      "groupName": "Pinned tool versions",
+      "labels": ["dependencies", "toolchain"]
+    }
+  ],
+
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Pinned tool versions in Taskfile.yml and workflow YAML",
+      "fileMatch": [
+        "Taskfile\\.yml$",
+        "\\.github/workflows/.*\\.yml$",
+        "azure-pipelines/.*\\.yml$"
+      ],
+      "matchStrings": [
+        "'(?<currentValue>[^']+)'\\s+#\\s*renovate:\\s*datasource=(?<datasource>[^\\s]+)\\s+depName=(?<depName>[^\\s]+)",
+        "\\s(?<currentValue>v[\\d.]+)\\s+#\\s*renovate:\\s*datasource=(?<datasource>[^\\s]+)\\s+depName=(?<depName>[^\\s]+)"
+      ],
+      "versioningTemplate": "{{#if (equals datasource 'npm')}}npm{{else}}semver{{/if}}"
     }
   ]
 }

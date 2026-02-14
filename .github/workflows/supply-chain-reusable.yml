@@ -8,13 +8,15 @@
 #
 #   jobs:
 #     supply-chain:
-#       uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@main
+#       uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@v1
 #       with:
 #         context: ./app
 #         image-name: my-app
 #       secrets:
 #         REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 #         DTRACK_API_KEY: ${{ secrets.DTRACK_API_KEY }}
+#
+# Pin to @v1 for automatic minor/patch updates, or @v1.2.0 for exact version.
 # =============================================================================
 
 name: Supply Chain Pipeline (Reusable)
@@ -71,6 +73,7 @@ permissions:
   contents: read
   packages: write
   id-token: write
+  attestations: write
 
 jobs:
   supply-chain:
@@ -258,6 +261,9 @@ jobs:
             exit 1
           fi
           echo "image=${DIGEST}" >> "$GITHUB_OUTPUT"
+          # Extract just the sha256:... part for attestation actions
+          DIGEST_HASH="${DIGEST##*@}"
+          echo "digest=${DIGEST_HASH}" >> "$GITHUB_OUTPUT"
           echo "Image digest: ${DIGEST}"
 
       - name: Install Cosign
@@ -306,6 +312,13 @@ jobs:
             --type cyclonedx \
             "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-attestation.log
           echo "SBOM attestation verified in registry"
+
+      - name: Attest SLSA build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ inputs.image-name }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
 
       # Upload the attested SBOM to Dependency-Track for continuous monitoring.
       # Non-blocking: DTrack is governance/monitoring, not a CI gate.

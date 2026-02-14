@@ -1,0 +1,92 @@
+# =============================================================================
+# Release workflow — Semantic versioning for the SDLC toolchain
+# =============================================================================
+# Creates a GitHub release with a changelog when a version tag is pushed.
+# Consumers can pin to a specific version:
+#   uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@v1.2.0
+#
+# Usage:
+#   git tag v1.2.0
+#   git push origin v1.2.0
+#
+# The workflow also maintains a floating major tag (v1, v2, ...) so consumers
+# who want automatic minor/patch updates can pin to @v1.
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag format
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "FATAL: Tag '$TAG' is not valid semver (expected vX.Y.Z)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+        id: tag
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+
+          # Find previous tag
+          PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '2p' || true)
+
+          if [ -n "$PREV_TAG" ]; then
+            echo "Changelog since $PREV_TAG:"
+            CHANGES=$(git log "$PREV_TAG..$TAG" --pretty=format:"- %s (%h)" --no-merges)
+          else
+            echo "First release, full changelog:"
+            CHANGES=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          fi
+
+          # Write changelog to file (for multiline output)
+          {
+            echo "## What's Changed"
+            echo ""
+            echo "$CHANGES"
+            echo ""
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG:-initial}...$TAG"
+          } > /tmp/changelog.md
+
+          cat /tmp/changelog.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file /tmp/changelog.md \
+            --verify-tag
+
+      - name: Update floating major tag
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          MAJOR=$(echo "$TAG" | cut -d. -f1)
+
+          # Force-update the major tag (e.g., v1 → latest v1.x.y)
+          git tag -f "$MAJOR" "$TAG"
+          git push -f origin "$MAJOR"
+          echo "Updated floating tag: $MAJOR → $TAG"

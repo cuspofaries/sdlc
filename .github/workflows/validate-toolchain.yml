@@ -29,7 +29,7 @@ jobs:
 
       - name: Install Task
         run: |
-          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0
+          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0 # renovate: datasource=github-releases depName=go-task/task
 
       - name: Install SBOM tools
         run: sudo task install
@@ -41,6 +41,9 @@ jobs:
         run: |
           opa check policies/sbom-compliance.rego
           echo "Policies valid"
+
+      - name: Run OPA unit tests
+        run: task opa:test
 
       - name: Validate scripts are executable
         run: |
@@ -110,7 +113,7 @@ jobs:
 
       - name: Install Task
         run: |
-          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0
+          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0 # renovate: datasource=github-releases depName=go-task/task
 
       - name: Install SBOM tools
         run: sudo task install
@@ -181,6 +184,9 @@ jobs:
 
       - name: "Phase 3: Attest SBOM (task sbom:attest)"
         run: task sbom:attest IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
+
+      - name: "Phase 3: Attest SLSA provenance (task slsa:attest)"
+        run: task slsa:attest IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
 
       - name: "Phase 3: Verify signature + attestation (task sbom:attest:verify)"
         run: task sbom:attest:verify IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000

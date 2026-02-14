@@ -11,9 +11,11 @@ version: '3'
 #   task sbom:generate         → Generate image SBOM (CycloneDX)
 #   task sbom:scan             → Scan image for vulnerabilities
 #   task sbom:policy           → Enforce OPA policies
+#   task opa:test              → Run OPA unit tests
 #   task push                  → Push image to registry
 #   task image:sign            → Sign image digest (cosign)
 #   task sbom:attest           → Attest SBOM to image digest
+#   task slsa:attest           → Attest SLSA build provenance
 #   task sbom:upload           → Upload to Dependency-Track
 #   task pipeline              → Full pipeline (build -> analyze -> publish)
 #   task pipeline:local        → Local pipeline (build -> analyze, no publish)
@@ -50,11 +52,11 @@ vars:
   COSIGN_PUB: ./cosign.pub
 
   # -- Tool versions (pinned for reproducibility) --
-  TRIVY_VERSION: '0.69.1'
-  COSIGN_VERSION: 'v3.0.4'
-  CDXGEN_VERSION: '10.10.7'
-  OPA_VERSION: 'v1.13.1'
-  ORAS_VERSION: '1.3.0'
+  TRIVY_VERSION: '0.69.1'   # renovate: datasource=github-releases depName=aquasecurity/trivy
+  COSIGN_VERSION: 'v3.0.4'  # renovate: datasource=github-releases depName=sigstore/cosign
+  CDXGEN_VERSION: '10.10.7' # renovate: datasource=npm depName=@cyclonedx/cdxgen
+  OPA_VERSION: 'v1.13.1'    # renovate: datasource=github-releases depName=open-policy-agent/opa
+  ORAS_VERSION: '1.3.0'     # renovate: datasource=github-releases depName=oras-project/oras
   # Azure Key Vault KMS (recommended for enterprise)
   # Example: myorgvault.vault.azure.net/cosign-key
   COSIGN_KMS_KEY: '{{.COSIGN_KMS_KEY | default ""}}'
@@ -228,6 +230,12 @@ tasks:
           --exit-code 0
       - echo "✅ SBOM scan complete (advisory) → {{.SCAN_DIR}}/scan-sbom-trivy.json"
 
+  opa:test:
+    desc: "Run OPA unit tests on policy rules"
+    cmds:
+      - opa test policies/ -v
+      - echo "✅ OPA policy tests passed"
+
   sbom:policy:
     desc: "Evaluate SBOM against OPA policies (baseline + optional custom)"
     cmds:
@@ -265,6 +273,11 @@ tasks:
     status:
       - test -f cosign.key
       - test -f cosign.pub
+
+  slsa:attest:
+    desc: "Attest SLSA build provenance to image digest"
+    cmds:
+      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" ./scripts/slsa-provenance.sh {{.IMAGE}} {{.COSIGN_KEY}}
 
   sbom:attest:
     desc: "Attest image SBOM to image digest (strongest — requires registry)"
@@ -390,6 +403,7 @@ tasks:
       - task: push
       - task: image:sign
       - task: sbom:attest
+      - task: slsa:attest
       - task: sbom:attest:verify
       - task: sbom:upload
       - echo ""

@@ -44,8 +44,9 @@
 | 12 | **Verify SBOM integrity** | `sha256sum` | Recomputes the SHA256 of the SBOM file and compares it to the hash recorded at generation (step 4). If the file was modified between generation and attestation, the pipeline stops. |
 | 13 | **Sign digest** | `cosign sign --yes` | Signs the **registry digest** (not the tag) with Cosign. GitHub Actions uses **keyless** mode (OIDC via Sigstore). Azure DevOps uses **Azure Key Vault KMS** (`azurekms://`) as primary method with keyless as fallback. The signature proves the image was produced by this CI/CD pipeline and has not been tampered with. |
 | 14 | **Attest SBOM** | `cosign attest --type cyclonedx` | Cryptographically binds the SBOM to the **registry digest** via an In-Toto attestation. The SBOM attested is the exact same file generated in step 4 — never regenerated or modified (verified by step 12). This is the **strongest guarantee**: it proves that THIS SBOM describes exactly THIS image. |
-| 15 | **Verify in registry** | `cosign verify` + `cosign verify-attestation` | Automated proof that signature and attestation are actually retrievable from the registry. Catches silent failures, accidental `--no-upload`, or registry persistence issues. **Blocking**: if verification fails, the pipeline stops before declaring success. |
-| 16 | **Upload to Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Sends the attested SBOM to Dependency-Track for continuous monitoring, linked to the **registry digest** (not the git SHA). **Non-blocking** (`continue-on-error`): DTrack is governance/monitoring, not a CI gate. If DTrack is down, the signed image still ships. Optional (skipped if `dtrack-hostname` is empty). |
+| 15 | **Attest SLSA provenance** | `actions/attest-build-provenance` | Generates and attests a [SLSA](https://slsa.dev/) build provenance predicate to the image digest. Records builder identity, source repo, revision, and build metadata. On GitHub Actions this uses the native attestation action; on Azure DevOps and local, a cosign-based provenance predicate is used via `scripts/slsa-provenance.sh`. |
+| 16 | **Verify in registry** | `cosign verify` + `cosign verify-attestation` | Automated proof that signature and attestation are actually retrievable from the registry. Catches silent failures, accidental `--no-upload`, or registry persistence issues. **Blocking**: if verification fails, the pipeline stops before declaring success. |
+| 17 | **Upload to Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Sends the attested SBOM to Dependency-Track for continuous monitoring, linked to the **registry digest** (not the git SHA). **Non-blocking** (`continue-on-error`): DTrack is governance/monitoring, not a CI gate. If DTrack is down, the signed image still ships. Optional (skipped if `dtrack-hostname` is empty). |
 
 ### Visual summary
 
@@ -90,14 +91,17 @@
   [13]  SIGN ──────────────> Cosign signature on digest
         |
         v
-  [14]  ATTEST ────────────> SBOM bound to digest (In-Toto)
+  [14]  ATTEST SBOM ───────> SBOM bound to digest (In-Toto)
         |
         v
-  [15]  VERIFY ────────────> Signature + attestation in registry?
+  [15]  ATTEST SLSA ───────> Build provenance bound to digest
+        |
+        v
+  [16]  VERIFY ────────────> Signature + attestation in registry?
         |                         |
         | OK                      | FAIL → STOP
         v
-  [16]  DTRACK ────────────> Monitoring (non-blocking, linked to digest)
+  [17]  DTRACK ────────────> Monitoring (non-blocking, linked to digest)
 ```
 
 ---
@@ -249,6 +253,33 @@ Not relaxed (same as prod): `TRIVY_EXIT_CODE=1`, `TRIVY_SEVERITY=HIGH,CRITICAL`,
 
 **Rule: every relaxation must answer WHY it can't be avoided and WHERE the real behavior is tested. If you can't answer both, don't relax.**
 
+### SLSA build provenance
+
+[SLSA](https://slsa.dev/) (Supply chain Levels for Software Artifacts) provenance records **who** built an image, **from what** source, and **how**. The pipeline attests a SLSA provenance predicate to the image digest alongside the SBOM attestation:
+
+- **GitHub Actions**: Uses `actions/attest-build-provenance@v2` (native GitHub attestation, stored in the package registry).
+- **Azure DevOps / local**: Uses `scripts/slsa-provenance.sh` which generates a SLSA v1.0 predicate (builder ID, source repo, revision, build URL) and attests it via cosign with the same KMS > keyless > keypair priority.
+
+This provides a verifiable chain from the published image back to the exact source commit and CI run that produced it.
+
+### Semantic versioning
+
+The toolchain uses [semantic versioning](https://semver.org/) via git tags (`v1.0.0`, `v1.2.3`). Pushing a version tag triggers the `release.yml` workflow which:
+
+1. Validates the tag format (`vX.Y.Z`)
+2. Generates a changelog from commit history
+3. Creates a GitHub Release
+4. Updates a floating major tag (`v1`) pointing to the latest `v1.x.y`
+
+Consumer repos can pin to:
+- `@v1` — automatic minor/patch updates (recommended)
+- `@v1.2.0` — exact version (maximum reproducibility)
+- `@main` — latest development (not recommended for production)
+
+### OPA unit tests
+
+Baseline OPA policies are covered by unit tests in `policies/sbom-compliance_test.rego` (run via `task opa:test` or `opa test policies/ -v`). Tests verify both deny and warn rules using `json.patch`/`json.remove` on a minimal valid SBOM fixture. The `validate-toolchain.yml` CI runs these tests on every push.
+
 ### Workflow output for downstream consumption
 
 The reusable GitHub Actions workflow exposes an `image` output containing the **full image reference with digest** (`registry/owner/name@sha256:...`). Downstream jobs can use this output to deploy, scan, or reference the exact image that was built, signed, and attested — without needing to resolve the digest themselves.
@@ -270,6 +301,7 @@ This pipeline provides the following verifiable guarantees:
 | **Only this project's pipeline can pass verify** | `--certificate-identity-regexp` scoped to org/project | Signature from other pipelines rejected |
 | **SBOM content is cryptographically bound to image** | In-Toto attestation via `cosign attest --type cyclonedx` | Attestation tampering detectable |
 | **All signatures are publicly auditable** | Rekor transparency log (no `--no-upload`) | Independent verification possible |
+| **Build provenance is attested** | SLSA provenance predicate attested to image digest | Builder, source, and revision are cryptographically bound |
 | **Known-bad packages are blocked** | OPA `deny` rules (baseline + custom) | `POLICY CHECK FAILED` |
 | **Copyleft licenses are caught** | OPA `deny` for GPL/AGPL/SSPL in app libraries (OS packages warn only) | `Copyleft license ... incompatible` |
 | **Outdated SBOM specs are rejected** | OPA `deny` for CycloneDX < 1.4 | `spec version too old` |
@@ -300,7 +332,7 @@ permissions:
 
 jobs:
   supply-chain:
-    uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@main
+    uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@v1
     with:
       context: ./app
       image-name: my-app
@@ -309,6 +341,8 @@ jobs:
       REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       DTRACK_API_KEY: ${{ secrets.DTRACK_API_KEY }}  # optional
 ```
+
+Pin to `@v1` for automatic minor/patch updates, or `@v1.2.0` for exact version pinning.
 
 ### Inputs
 
@@ -389,10 +423,12 @@ task pipeline \
 | `sbom:scan` | Scan image for vulnerabilities (trivy image — security gate) |
 | `sbom:scan:sbom` | Scan SBOM for vulnerabilities (trivy sbom — governance, advisory) |
 | `sbom:policy` | Evaluate SBOM against OPA policies |
+| `opa:test` | Run OPA unit tests on policy rules |
 | `push` | Push image to registry |
 | `image:sign` | Sign image digest (cosign) |
 | `image:verify` | Verify image signature |
 | `sbom:attest` | Attest SBOM to image digest |
+| `slsa:attest` | Attest SLSA build provenance to image digest |
 | `sbom:attest:verify` | Verify signature and attestation are published in the registry |
 | `sbom:sign:blob` | Sign SBOM as standalone file |
 | `sbom:verify` | Verify SBOM signature and integrity |
@@ -453,7 +489,8 @@ sdlc/
 ├── .github/workflows/
 │   ├── supply-chain-reusable.yml     ← Unified workflow (consumed by app repos)
 │   ├── daily-rescan.yml              ← Scheduled rescan with latest CVE data
-│   └── validate-toolchain.yml        ← CI + end-to-end pipeline test
+│   ├── validate-toolchain.yml        ← CI + end-to-end pipeline test
+│   └── release.yml                   ← Semantic versioning (tag → GitHub Release)
 ├── azure-pipelines/
 │   └── pipeline.yml                  ← Azure DevOps template
 ├── scripts/                          ← Shell scripts (Taskfile orchestrates, scripts do the work)
@@ -466,9 +503,11 @@ sdlc/
 │   ├── sbom-sign.sh
 │   ├── sbom-tamper-test.sh
 │   ├── sbom-upload-dtrack.sh
-│   └── sbom-verify.sh
+│   ├── sbom-verify.sh
+│   └── slsa-provenance.sh
 ├── policies/
-│   └── sbom-compliance.rego          ← Baseline OPA policies
+│   ├── sbom-compliance.rego          ← Baseline OPA policies
+│   └── sbom-compliance_test.rego     ← OPA unit tests
 ├── docs/
 │   ├── azure-devops-porting.md       ← Porting checklist for Azure DevOps
 │   ├── dependency-track.md
@@ -500,7 +539,7 @@ jobs:
 ```yaml
 jobs:
   supply-chain:
-    uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@main
+    uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@v1
     with:
       context: ./app
       image-name: my-app

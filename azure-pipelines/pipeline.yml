@@ -64,7 +64,7 @@ stages:
 
           # Install go-task
           - script: |
-              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0
+              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0 # renovate: datasource=github-releases depName=go-task/task
             displayName: 'Install Task'
 
           # Install SBOM toolchain
@@ -129,7 +129,7 @@ stages:
 
           # Install tools needed for publish phase
           - script: |
-              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0
+              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0 # renovate: datasource=github-releases depName=go-task/task
             displayName: 'Install Task'
 
           - script: sudo task install:cosign
@@ -263,6 +263,54 @@ stages:
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
 
+          # Attest SLSA build provenance
+          - script: |
+              echo "Attesting SLSA provenance to digest: $(IMAGE_DIGEST)"
+              TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+              PROVENANCE=$(mktemp)
+              cat > "$PROVENANCE" <<PRED
+              {
+                "buildDefinition": {
+                  "buildType": "https://slsa.dev/container-based-build/v0.1",
+                  "externalParameters": {
+                    "source": "$(Build.Repository.Uri)",
+                    "revision": "$(Build.SourceVersion)"
+                  },
+                  "internalParameters": {
+                    "buildId": "$(Build.BuildId)",
+                    "buildUrl": "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+                  }
+                },
+                "runDetails": {
+                  "builder": {
+                    "id": "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+                  },
+                  "metadata": {
+                    "invocationId": "$(Build.BuildId)",
+                    "startedOn": "$TIMESTAMP"
+                  }
+                }
+              }
+              PRED
+              if [ -n "$(COSIGN_KV_KEY)" ]; then
+                cosign attest --yes \
+                  --key "azurekms://$(COSIGN_KV_KEY)" \
+                  --predicate "$PROVENANCE" \
+                  --type slsaprovenance \
+                  "$(IMAGE_DIGEST)"
+              else
+                cosign attest --yes \
+                  --predicate "$PROVENANCE" \
+                  --type slsaprovenance \
+                  "$(IMAGE_DIGEST)"
+              fi
+              rm -f "$PROVENANCE"
+            displayName: 'Attest SLSA Build Provenance'
+            env:
+              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+
           # Post-sign verification: confirm signature is retrievable from registry
           # Full output archived in output/verify/ for audit trail.
           - script: |
@@ -341,7 +389,7 @@ stages:
           - checkout: self
 
           - script: |
-              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0
+              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0 # renovate: datasource=github-releases depName=go-task/task
             displayName: 'Install Task'
 
           - script: sudo task install:trivy
