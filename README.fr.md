@@ -300,8 +300,22 @@ Les repos consommateurs peuvent pinner a :
 
 Quand une vulnerabilite ne peut pas etre corrigee immediatement mais est evaluee comme temporairement acceptable, le pipeline supporte des **exceptions structurees, limitees dans le temps, et auditables** via `security-exceptions.yaml`. Cela repond a la question de l'auditeur : « Comment gerez-vous une vulnerabilite acceptable temporairement ? »
 
+**Ou placer le fichier ?** Dans le **repo consommateur** (ex : `charly/`), pas dans `sdlc`. Chaque projet possede son propre risque — une CVE acceptable pour une application ne l'est pas forcement pour une autre. Le repo `sdlc` fournit les **mecanismes** (scripts + regles rego), le repo consommateur fournit les **donnees** (quels CVE sont acceptes, par qui, jusqu'a quand).
+
+```
+charly/                              ← repo consommateur
+├── app/
+│   └── Dockerfile
+├── security-exceptions.yaml         ← les exceptions vivent ICI
+├── policies/                        ← regles OPA custom (optionnel)
+└── .github/workflows/
+    └── build.yml                    ← passe exceptions-file a sdlc
+```
+
+Le fichier est versionne git dans `charly` — chaque ajout, modification ou suppression passe par une PR, creant une piste d'audit complete (qui a ajoute l'exception, quand, approuvee par qui).
+
 ```yaml
-# security-exceptions.yaml (dans le repo consommateur, versionne git)
+# charly/security-exceptions.yaml
 exceptions:
   - id: CVE-2024-32002
     package: "git"
@@ -312,6 +326,21 @@ exceptions:
 ```
 
 **Les 6 champs sont obligatoires.** Pas d'exception permanente — `expires` est requis.
+
+Le workflow du consommateur passe le fichier au workflow reutilisable :
+
+```yaml
+# charly/.github/workflows/build.yml
+jobs:
+  supply-chain:
+    uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@v1
+    with:
+      context: ./app
+      image-name: charly
+      exceptions-file: security-exceptions.yaml  # ← passe aux deux gates
+    secrets:
+      REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
 
 Le mecanisme opere sur **deux gates independants** :
 
@@ -340,7 +369,7 @@ security-exceptions.yaml (repo consommateur, versionne git)
                                                     +-- warn : exceptions actives (audit)
 ```
 
-Pour utiliser dans un repo consommateur : creer `security-exceptions.yaml` a la racine du repo et passer `exceptions-file: security-exceptions.yaml` au workflow reutilisable. En local : `task sbom:scan EXCEPTIONS_FILE=security-exceptions.yaml`.
+En local avec Taskfile : placer `security-exceptions.yaml` a la racine du projet et lancer `task sbom:scan` / `task sbom:policy` — la variable `EXCEPTIONS_FILE` par defaut le detecte automatiquement. Pour overrider : `task sbom:scan EXCEPTIONS_FILE=chemin/vers/exceptions.yaml`.
 
 ### Tests unitaires OPA
 
@@ -405,7 +434,8 @@ jobs:
     with:
       context: ./app
       image-name: my-app
-      dtrack-hostname: dep-api.example.com  # optionnel
+      exceptions-file: security-exceptions.yaml  # optionnel — voir "Exceptions de securite"
+      dtrack-hostname: dep-api.example.com        # optionnel
     secrets:
       REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       DTRACK_API_KEY: ${{ secrets.DTRACK_API_KEY }}  # optionnel
