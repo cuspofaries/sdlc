@@ -282,26 +282,45 @@ stages:
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
 
-          # Post-attestation verification: confirm signature and attestation
-          # are retrievable from the registry. Automated proof that the
-          # publish phase persisted what it claims.
+          # Post-sign verification: confirm signature is retrievable from registry
           - script: |
               if [ -n "$(COSIGN_KV_KEY)" ]; then
+                echo "Verifying signature (KMS)..."
                 cosign verify \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   "$(IMAGE_DIGEST)" 2>&1 | head -5
-                echo "Signature verified in registry (KMS)"
+              else
+                echo "Verifying signature (keyless)..."
+                cosign verify \
+                  --certificate-oidc-issuer https://vstoken.dev.azure.com \
+                  --certificate-identity-regexp ".*" \
+                  "$(IMAGE_DIGEST)" 2>&1 | head -5
+              fi
+              echo "Signature verified in registry"
+            displayName: 'Verify Signature in Registry'
+            env:
+              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
 
+          # Post-attest verification: confirm attestation is retrievable from registry
+          - script: |
+              if [ -n "$(COSIGN_KV_KEY)" ]; then
+                echo "Verifying attestation (KMS)..."
                 cosign verify-attestation \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   --type cyclonedx \
                   "$(IMAGE_DIGEST)" > /dev/null 2>&1
-                echo "SBOM attestation verified in registry (KMS)"
               else
-                echo "Keyless mode: signature verification requires OIDC issuer context"
-                echo "Skipping automated verify (use cosign verify manually with --certificate-oidc-issuer)"
+                echo "Verifying attestation (keyless)..."
+                cosign verify-attestation \
+                  --certificate-oidc-issuer https://vstoken.dev.azure.com \
+                  --certificate-identity-regexp ".*" \
+                  --type cyclonedx \
+                  "$(IMAGE_DIGEST)" > /dev/null 2>&1
               fi
-            displayName: 'Verify Signature & Attestation in Registry'
+              echo "SBOM attestation verified in registry"
+            displayName: 'Verify Attestation in Registry'
             env:
               AZURE_TENANT_ID: $(AZURE_TENANT_ID)
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
