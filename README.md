@@ -182,7 +182,7 @@ The DailyRescan stage (Azure DevOps) needs the original SBOM to rescan it with t
 
 ### Why every cosign operation logs the digest
 
-Every `cosign sign`, `cosign attest`, `cosign verify`, and `cosign verify-attestation` call is preceded by an explicit `echo` of the target digest. This is an **audit trail** requirement: if an incident occurs, the CI logs provide an unambiguous record of exactly which digest was signed, attested, and verified. The verify output is archived as `.log` files (not `.json` — cosign outputs text, not JSON) in `output/verify/` and uploaded as artifacts with 30-day retention. The artifact upload uses `if: always()` / `condition: always()` so that scan results and SBOM data are preserved **even if the pipeline fails** — critical for post-incident analysis.
+Every `cosign sign`, `cosign attest`, `cosign verify`, and `cosign verify-attestation` call is preceded by an explicit `echo` of the target digest. This is an **audit trail** requirement: if an incident occurs, the CI logs provide an unambiguous record of exactly which digest was signed, attested, and verified. Verify outputs are stored as `.log` files because cosign produces human-readable text; JSON parsing is intentionally avoided to keep the verify step platform-agnostic. These files are archived in `output/verify/` and uploaded as artifacts with 30-day retention. The artifact upload uses `if: always()` / `condition: always()` so that scan results and SBOM data are preserved **even if the pipeline fails** — critical for post-incident analysis.
 
 ### Why Rekor transparency by default
 

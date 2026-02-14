@@ -182,7 +182,7 @@ Le stage DailyRescan (Azure DevOps) a besoin du SBOM original pour le rescanner 
 
 ### Pourquoi chaque operation cosign affiche le digest
 
-Chaque appel `cosign sign`, `cosign attest`, `cosign verify` et `cosign verify-attestation` est precede d'un `echo` explicite du digest cible. C'est une exigence de **piste d'audit** : en cas d'incident, les logs CI fournissent un enregistrement univoque du digest exact qui a ete signe, atteste et verifie. La sortie des verifications est archivee en fichiers `.log` (pas `.json` — cosign produit du texte, pas du JSON) dans `output/verify/` et uploadee comme artifacts avec 30 jours de retention. L'upload utilise `if: always()` / `condition: always()` pour que les resultats de scan et les donnees SBOM soient conserves **meme si le pipeline echoue** — essentiel pour l'analyse post-incident.
+Chaque appel `cosign sign`, `cosign attest`, `cosign verify` et `cosign verify-attestation` est precede d'un `echo` explicite du digest cible. C'est une exigence de **piste d'audit** : en cas d'incident, les logs CI fournissent un enregistrement univoque du digest exact qui a ete signe, atteste et verifie. Les sorties de verification sont stockees en fichiers `.log` car cosign produit du texte lisible ; le parsing JSON est intentionnellement evite pour garder l'etape de verification agnostique de la plateforme. Ces fichiers sont archives dans `output/verify/` et uploades comme artifacts avec 30 jours de retention. L'upload utilise `if: always()` / `condition: always()` pour que les resultats de scan et les donnees SBOM soient conserves **meme si le pipeline echoue** — essentiel pour l'analyse post-incident.
 
 ### Pourquoi la transparence Rekor par defaut
 
