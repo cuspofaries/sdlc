@@ -77,21 +77,12 @@ jobs:
 
       - name: Create test Dockerfile
         run: |
-          mkdir -p test-app
-          cat > test-app/Dockerfile <<'DOCKERFILE'
-          FROM alpine:3.19
-          RUN apk add --no-cache curl jq
-          COPY entrypoint.sh /entrypoint.sh
-          RUN chmod +x /entrypoint.sh
-          CMD ["/entrypoint.sh"]
-          DOCKERFILE
-          cat > test-app/entrypoint.sh <<'SCRIPT'
-          #!/bin/sh
-          echo "SDLC test image"
-          SCRIPT
+          mkdir -p app
+          printf 'FROM alpine:3.19\nRUN apk add --no-cache curl jq\nCMD ["echo", "SDLC test image"]\n' > app/Dockerfile
+          cat app/Dockerfile
 
       - name: Build test image
-        run: task build IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost CONTEXT=./test-app
+        run: task build IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost
 
       - name: Generate SBOM
         run: task sbom:generate IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost
