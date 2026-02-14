@@ -39,7 +39,15 @@ if docker inspect "$IMAGE" &>/dev/null; then
     if [ -n "$IMAGE_DIGEST" ]; then
         echo "   Image digest found: ${IMAGE_DIGEST}"
 
-        if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+        if [ -n "${COSIGN_KMS_KEY:-}" ]; then
+            echo "   Mode: Azure Key Vault KMS"
+            cosign attest --yes \
+                --key "azurekms://${COSIGN_KMS_KEY}" \
+                --predicate "$SBOM_FILE" \
+                --type cyclonedx \
+                "$IMAGE_DIGEST" && ATTEST_OK=true
+
+        elif [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
             echo "   Mode: GitHub Actions keyless"
             cosign attest --yes \
                 --predicate "$SBOM_FILE" \
@@ -47,7 +55,7 @@ if docker inspect "$IMAGE" &>/dev/null; then
                 "$IMAGE_DIGEST" && ATTEST_OK=true
 
         elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
-            echo "   Mode: Azure DevOps keyless"
+            echo "   Mode: Azure DevOps keyless (fallback)"
             AZURE_TOKEN=$(curl -s \
                 -H "Content-Type: application/json" \
                 -d '{}' \

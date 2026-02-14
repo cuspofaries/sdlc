@@ -13,10 +13,11 @@
 # Requires: image must be pushed to a registry first.
 # For local-only work without registry, use sbom:sign:blob instead.
 #
-# Supports:
-#   - Keypair (POC / air-gapped)
+# Supports (in priority order):
+#   - Azure Key Vault KMS (recommended for enterprise — set COSIGN_KMS_KEY)
 #   - GitHub Actions keyless (OIDC → Fulcio + Rekor)
-#   - Azure DevOps keyless (Azure AD Workload Identity)
+#   - Azure DevOps keyless (Azure AD Workload Identity — fallback)
+#   - Keypair (POC / air-gapped)
 # =============================================================================
 set -euo pipefail
 
@@ -60,8 +61,18 @@ echo "   SBOM SHA256: ${SBOM_SHA}"
 echo ""
 
 # --- Detect environment and attest ---
+# Priority: KMS > GitHub keyless > Azure keyless > Keypair
 
-if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+if [ -n "${COSIGN_KMS_KEY:-}" ]; then
+    # ── Azure Key Vault KMS (recommended for enterprise) ──
+    echo "── Mode: Azure Key Vault KMS ──"
+    cosign attest --yes \
+        --key "azurekms://${COSIGN_KMS_KEY}" \
+        --predicate "$SBOM_FILE" \
+        --type cyclonedx \
+        "$IMAGE_DIGEST"
+
+elif [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
     # ── GitHub Actions: keyless via Fulcio + Rekor ──
     echo "── Mode: GitHub Actions keyless (OIDC) ──"
     cosign attest --yes \
@@ -70,8 +81,8 @@ if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
         "$IMAGE_DIGEST"
 
 elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
-    # ── Azure DevOps: keyless via Azure AD Workload Identity ──
-    echo "── Mode: Azure DevOps keyless (Workload Identity) ──"
+    # ── Azure DevOps: keyless fallback via Azure AD Workload Identity ──
+    echo "── Mode: Azure DevOps keyless (Workload Identity — fallback) ──"
 
     AZURE_TOKEN=$(curl -s \
         -H "Content-Type: application/json" \
@@ -99,6 +110,7 @@ elif [ -f "$COSIGN_KEY" ]; then
 else
     echo "❌ No signing method available."
     echo "   Options:"
+    echo "   - Set COSIGN_KMS_KEY for Azure Key Vault KMS"
     echo "   - Run in GitHub Actions or Azure DevOps (keyless)"
     echo "   - Generate a keypair: task signing:init"
     echo "   - Use blob signing: task sbom:sign:blob"

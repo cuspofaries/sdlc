@@ -48,6 +48,9 @@ vars:
   # -- Signing --
   COSIGN_KEY: ./cosign.key
   COSIGN_PUB: ./cosign.pub
+  # Azure Key Vault KMS (recommended for enterprise)
+  # Example: myorgvault.vault.azure.net/cosign-key
+  COSIGN_KMS_KEY: '{{.COSIGN_KMS_KEY | default ""}}'
 
 env:
   COSIGN_EXPERIMENTAL: "1"
@@ -234,32 +237,44 @@ tasks:
       - echo "✅ Image pushed {{.IMAGE}}"
 
   image:sign:
-    desc: "Sign image digest with cosign (keyless in CI, keypair locally)"
-    deps: [signing:init]
+    desc: "Sign image digest with cosign (KMS > keyless > keypair)"
     cmds:
       - |
-        if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+        KMS_KEY="{{.COSIGN_KMS_KEY}}"
+        if [ -n "$KMS_KEY" ]; then
+          echo "Mode: Azure Key Vault KMS"
+          cosign sign --yes --key "azurekms://$KMS_KEY" "{{.IMAGE}}"
+        elif [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
           echo "Mode: GitHub Actions keyless"
           cosign sign --yes "{{.IMAGE}}"
         elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
-          echo "Mode: Azure DevOps keyless"
+          echo "Mode: Azure DevOps keyless (fallback)"
           cosign sign --yes "{{.IMAGE}}"
         elif [ -f "{{.COSIGN_KEY}}" ]; then
           echo "Mode: Keypair"
-          cosign sign --key {{.COSIGN_KEY}} --yes "{{.IMAGE}}"
+          cosign sign --key "{{.COSIGN_KEY}}" --yes "{{.IMAGE}}"
         else
-          echo "No signing method available. Run: task signing:init"
+          echo "No signing method available."
+          echo "  Set COSIGN_KMS_KEY for Azure Key Vault KMS"
+          echo "  Or run in GitHub Actions / Azure DevOps for keyless"
+          echo "  Or run: task signing:init for local keypair"
           exit 1
         fi
       - echo "✅ Image signed {{.IMAGE}}"
 
   image:verify:
-    desc: "Verify image signature"
+    desc: "Verify image signature (KMS > keypair > keyless)"
     cmds:
       - |
-        if [ -f "{{.COSIGN_PUB}}" ]; then
-          cosign verify --key {{.COSIGN_PUB}} "{{.IMAGE}}"
+        KMS_KEY="{{.COSIGN_KMS_KEY}}"
+        if [ -n "$KMS_KEY" ]; then
+          echo "Mode: Azure Key Vault KMS"
+          cosign verify --key "azurekms://$KMS_KEY" "{{.IMAGE}}"
+        elif [ -f "{{.COSIGN_PUB}}" ]; then
+          echo "Mode: Keypair"
+          cosign verify --key "{{.COSIGN_PUB}}" "{{.IMAGE}}"
         else
+          echo "Mode: Keyless (GitHub OIDC)"
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/" \
