@@ -92,6 +92,31 @@ stages:
           - script: task sbom:policy
             displayName: 'OPA Policy Check'
 
+          # Record SBOM SHA256 + image ID for integrity verification in Publish stage
+          - script: |
+              SBOM_FILE="output/sbom/image/sbom-image-trivy.json"
+
+              # SHA256 of SBOM file
+              SBOM_SHA256=$(sha256sum "$SBOM_FILE" | awk '{print $1}')
+              echo "$SBOM_SHA256" > output/sbom/image/sbom-image-trivy.json.sha256
+              echo "SBOM SHA256: $SBOM_SHA256"
+
+              # Image ID from SBOM (recorded by Trivy)
+              IMAGE_ID_IN_SBOM=$(jq -r '.metadata.component.properties[]? | select(.name == "aquasecurity:trivy:ImageID") | .value' "$SBOM_FILE" 2>/dev/null || echo "")
+              echo "$IMAGE_ID_IN_SBOM" > output/sbom/image/sbom-image-id.txt
+              echo "Image ID in SBOM: $IMAGE_ID_IN_SBOM"
+
+              # Verify alignment with actual image right now
+              IMAGE="$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
+              ACTUAL_IMAGE_ID=$(docker inspect --format='{{.Id}}' "$IMAGE")
+              echo "Image ID (docker): $ACTUAL_IMAGE_ID"
+              if [ -n "$IMAGE_ID_IN_SBOM" ] && [ "$ACTUAL_IMAGE_ID" != "$IMAGE_ID_IN_SBOM" ]; then
+                echo "##vso[task.logissue type=error]Image ID mismatch — SBOM describes a different image!"
+                exit 1
+              fi
+              echo "Image-SBOM alignment verified"
+            displayName: 'Record SBOM Integrity Checksums'
+
           # Save image as tar for next stage (guarantees same image is pushed)
           - script: |
               IMAGE="$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
@@ -172,6 +197,34 @@ stages:
               docker load -i output/image/image.tar
               echo "Image loaded: $(docker images --format '{{.Repository}}:{{.Tag}}' | head -1)"
             displayName: 'Load Scanned Image'
+
+          # Verify SBOM integrity (must be untouched since BuildAndAnalyze)
+          - script: |
+              SBOM_FILE="output/sbom/image/sbom-image-trivy.json"
+
+              # 1. SHA256 verification
+              EXPECTED_SHA256=$(cat output/sbom/image/sbom-image-trivy.json.sha256)
+              ACTUAL_SHA256=$(sha256sum "$SBOM_FILE" | awk '{print $1}')
+              echo "Expected SHA256: $EXPECTED_SHA256"
+              echo "Actual SHA256:   $ACTUAL_SHA256"
+              if [ "$EXPECTED_SHA256" != "$ACTUAL_SHA256" ]; then
+                echo "##vso[task.logissue type=error]SBOM was modified between stages!"
+                exit 1
+              fi
+              echo "SBOM integrity: OK"
+
+              # 2. Image ID alignment (loaded image must match SBOM)
+              EXPECTED_IMAGE_ID=$(cat output/sbom/image/sbom-image-id.txt)
+              IMAGE="$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
+              ACTUAL_IMAGE_ID=$(docker inspect --format='{{.Id}}' "$IMAGE" 2>/dev/null || echo "")
+              echo "Expected Image ID: $EXPECTED_IMAGE_ID"
+              echo "Actual Image ID:   $ACTUAL_IMAGE_ID"
+              if [ -n "$EXPECTED_IMAGE_ID" ] && [ "$ACTUAL_IMAGE_ID" != "$EXPECTED_IMAGE_ID" ]; then
+                echo "##vso[task.logissue type=error]Loaded image does not match SBOM — different image!"
+                exit 1
+              fi
+              echo "Image-SBOM alignment: OK"
+            displayName: 'Verify SBOM Integrity & Image Alignment'
 
           # Push
           - script: task push IMAGE_TAG=$(IMAGE_TAG)

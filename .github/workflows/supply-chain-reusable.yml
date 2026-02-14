@@ -147,12 +147,37 @@ jobs:
           rm -f opa
 
       - name: Generate SBOM (trivy image → CycloneDX)
+        id: sbom
         run: |
           mkdir -p output/sbom/image
           trivy image "${{ steps.image-ref.outputs.image }}" \
             --format cyclonedx \
             --output output/sbom/image/sbom-image-trivy.json
-          echo "SBOM generated"
+
+          # Record SBOM SHA256 for integrity verification before attestation
+          SBOM_SHA256=$(sha256sum output/sbom/image/sbom-image-trivy.json | awk '{print $1}')
+          echo "sbom_sha256=${SBOM_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "SBOM generated (SHA256: ${SBOM_SHA256})"
+
+          # Record image ID from SBOM for cross-check
+          IMAGE_ID_IN_SBOM=$(jq -r '.metadata.component.properties[]? | select(.name == "aquasecurity:trivy:ImageID") | .value' output/sbom/image/sbom-image-trivy.json 2>/dev/null || echo "")
+          echo "sbom_image_id=${IMAGE_ID_IN_SBOM}" >> "$GITHUB_OUTPUT"
+          echo "Image ID in SBOM: ${IMAGE_ID_IN_SBOM}"
+
+      - name: Verify image-SBOM alignment
+        run: |
+          # Verify the SBOM describes the image we actually built
+          ACTUAL_IMAGE_ID=$(docker inspect --format='{{.Id}}' "${{ steps.image-ref.outputs.image }}")
+          SBOM_IMAGE_ID="${{ steps.sbom.outputs.sbom_image_id }}"
+
+          echo "Image ID (docker): ${ACTUAL_IMAGE_ID}"
+          echo "Image ID (SBOM):   ${SBOM_IMAGE_ID}"
+
+          if [ -n "$SBOM_IMAGE_ID" ] && [ "$ACTUAL_IMAGE_ID" != "$SBOM_IMAGE_ID" ]; then
+            echo "FATAL: Image ID mismatch — SBOM describes a different image!"
+            exit 1
+          fi
+          echo "Image-SBOM alignment verified"
 
       - name: Scan vulnerabilities (trivy image — security gate)
         run: |
@@ -264,8 +289,19 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "1"
 
-      # Attest the SAME SBOM that was generated and scanned in Phase 2.
-      # Never regenerate — this file must be untouched since step 4.
+      # Verify SBOM integrity before attestation — must be untouched since Phase 2
+      - name: Verify SBOM integrity (SHA256)
+        run: |
+          EXPECTED="${{ steps.sbom.outputs.sbom_sha256 }}"
+          ACTUAL=$(sha256sum output/sbom/image/sbom-image-trivy.json | awk '{print $1}')
+          echo "Expected SHA256: ${EXPECTED}"
+          echo "Actual SHA256:   ${ACTUAL}"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "FATAL: SBOM was modified between generation and attestation!"
+            exit 1
+          fi
+          echo "SBOM integrity verified — file untouched since generation"
+
       - name: Attest SBOM to image digest
         run: |
           cosign attest --yes \
