@@ -270,13 +270,14 @@ stages:
 
           # Sign image — Key Vault KMS (preferred) or keyless (fallback)
           - script: |
+              echo "Signing digest: $(IMAGE_DIGEST)"
               if [ -n "$(COSIGN_KV_KEY)" ]; then
-                echo "Signing with Azure Key Vault KMS"
+                echo "Mode: Azure Key Vault KMS"
                 cosign sign --yes \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   "$(IMAGE_DIGEST)"
               else
-                echo "COSIGN_KV_KEY not set, falling back to keyless (OIDC)"
+                echo "Mode: keyless (OIDC)"
                 cosign sign --yes "$(IMAGE_DIGEST)"
               fi
             displayName: 'Sign Image Digest'
@@ -288,15 +289,16 @@ stages:
           # Attest the SAME SBOM from BuildAndAnalyze stage (via artifact).
           # Never regenerate — this file must be untouched since Phase 2.
           - script: |
+              echo "Attesting SBOM to digest: $(IMAGE_DIGEST)"
               if [ -n "$(COSIGN_KV_KEY)" ]; then
-                echo "Attesting with Azure Key Vault KMS"
+                echo "Mode: Azure Key Vault KMS"
                 cosign attest --yes \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   --predicate output/sbom/image/sbom-image-trivy.json \
                   --type cyclonedx \
                   "$(IMAGE_DIGEST)"
               else
-                echo "COSIGN_KV_KEY not set, falling back to keyless (OIDC)"
+                echo "Mode: keyless (OIDC)"
                 cosign attest --yes \
                   --predicate output/sbom/image/sbom-image-trivy.json \
                   --type cyclonedx \
@@ -312,13 +314,14 @@ stages:
           # Full output archived in output/verify/ for audit trail.
           - script: |
               mkdir -p output/verify
+              echo "Verifying signature for digest: $(IMAGE_DIGEST)"
               if [ -n "$(COSIGN_KV_KEY)" ]; then
-                echo "Verifying signature (KMS)..."
+                echo "Mode: KMS"
                 cosign verify \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-signature.log
               else
-                echo "Verifying signature (keyless)..."
+                echo "Mode: keyless"
                 cosign verify \
                   --certificate-oidc-issuer https://vstoken.dev.azure.com \
                   --certificate-identity-regexp "https://dev.azure.com/cuspofaries/sdlc/_build" \
@@ -333,14 +336,15 @@ stages:
 
           # Post-attest verification: confirm attestation is retrievable from registry
           - script: |
+              echo "Verifying attestation for digest: $(IMAGE_DIGEST)"
               if [ -n "$(COSIGN_KV_KEY)" ]; then
-                echo "Verifying attestation (KMS)..."
+                echo "Mode: KMS"
                 cosign verify-attestation \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   --type cyclonedx \
                   "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation.log
               else
-                echo "Verifying attestation (keyless)..."
+                echo "Mode: keyless"
                 cosign verify-attestation \
                   --certificate-oidc-issuer https://vstoken.dev.azure.com \
                   --certificate-identity-regexp "https://dev.azure.com/cuspofaries/sdlc/_build" \
@@ -454,7 +458,7 @@ stages:
                 exit 0
               fi
 
-              echo "Extracting attested SBOM from registry..."
+              echo "Extracting attested SBOM for digest: $(RESCAN_IMAGE)"
               SBOM_EXTRACTED=false
 
               # Attempt 1: Extract SBOM from cosign attestation (source of truth)

@@ -285,7 +285,9 @@ jobs:
         uses: sigstore/cosign-installer@v3
 
       - name: Sign image (keyless)
-        run: cosign sign --yes "${{ steps.digest.outputs.image }}"
+        run: |
+          echo "Signing digest: ${{ steps.digest.outputs.image }}"
+          cosign sign --yes "${{ steps.digest.outputs.image }}"
         env:
           COSIGN_EXPERIMENTAL: "1"
 
@@ -304,6 +306,7 @@ jobs:
 
       - name: Attest SBOM to image digest
         run: |
+          echo "Attesting SBOM to digest: ${{ steps.digest.outputs.image }}"
           cosign attest --yes \
             --predicate output/sbom/image/sbom-image-trivy.json \
             --type cyclonedx \
@@ -317,6 +320,7 @@ jobs:
       - name: Verify signature in registry
         run: |
           mkdir -p output/verify
+          echo "Verifying signature for digest: ${{ steps.digest.outputs.image }}"
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
@@ -325,6 +329,7 @@ jobs:
 
       - name: Verify attestation in registry
         run: |
+          echo "Verifying attestation for digest: ${{ steps.digest.outputs.image }}"
           cosign verify-attestation \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
