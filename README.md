@@ -22,24 +22,74 @@ Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a s
 
 ---
 
-## Pipeline flow
+## Pipeline — Step-by-step checklist
+
+### PHASE 1 — BUILD (nothing leaves the runner)
+
+| # | Step | Tool | Explanation |
+|---|------|------|-------------|
+| 1 | **Checkout code** | `actions/checkout` | Clones the application repo (Dockerfile, source code, custom policies). |
+| 2 | **Checkout toolchain** | `actions/checkout` | Clones the `sdlc` repo into `.sdlc/` to access baseline policies and scripts. |
+| 3 | **Build image** | `docker/build-push-action` | Builds the container image **locally** (`load: true`, `push: false`). Nothing leaves the runner at this stage. |
+
+### PHASE 2 — ANALYZE (on the local image, before any publish)
+
+| # | Step | Tool | Explanation |
+|---|------|------|-------------|
+| 4 | **Generate SBOM** | `trivy image --format cyclonedx` | Scans the local image and produces a full inventory (OS packages, libraries, versions, licenses) in CycloneDX JSON format. The SBOM answers: "what is actually inside my container?" |
+| 5 | **Scan vulnerabilities** | `trivy image --exit-code` | Scans the image **directly** (not the SBOM) for HIGH and CRITICAL CVEs. Uses `--exit-code 1` to block or `0` to warn without blocking. Direct image scan is more reliable than scanning the SBOM because Trivy accesses filesystem metadata. |
+| 6 | **Evaluate OPA policies** | `opa eval` | Evaluates the SBOM against Rego rules at two levels: **deny** (blocking — fails the pipeline) and **warn** (advisory — displays a warning). Baseline policies (`sdlc/policies/`) are automatically merged with custom policies from the app repo (`policies/`) if they exist. Example rules: blocked packages (known supply chain attacks), components without versions, unapproved licenses. |
 
 ```
-PHASE 1 — BUILD (nothing leaves the runner)
-  1. Checkout
-  2. Build image (--load, no push)
+══════════════════════════════════════════════════════
+  GATE: if step 5 or 6 fails → PIPELINE STOPS
+  Nothing is published. The image stays local.
+══════════════════════════════════════════════════════
+```
 
-PHASE 2 — ANALYZE (on the local image)
-  3. Generate SBOM (trivy image --format cyclonedx)
-  4. Scan vulnerabilities (trivy image direct)
-  5. Evaluate OPA policies (baseline + custom)
-  ══ GATE: if 4 or 5 fails → STOP ══
+### PHASE 3 — PUBLISH (only if gate passes)
 
-PHASE 3 — PUBLISH (only if gate passes)
-  6. Push image to registry
-  7. Sign digest (Cosign keyless)
-  8. Attest SBOM to digest (Cosign attest)
-  9. Upload SBOM to Dependency-Track
+| # | Step | Tool | Explanation |
+|---|------|------|-------------|
+| 7 | **Login to registry** | `docker/login-action` | Authenticates to the container registry (GHCR, ACR, etc.) with the provided token. |
+| 8 | **Push image** | `docker push` | Pushes the image to the registry. At this point, we know it passed scanning and policies. |
+| 9 | **Sign digest** | `cosign sign --yes` | Signs the image digest with Cosign in **keyless** mode (OIDC via Sigstore). The signature proves the image was produced by this CI/CD pipeline and has not been tampered with. Verifiable by anyone with `cosign verify`. |
+| 10 | **Attest SBOM** | `cosign attest --type cyclonedx` | Cryptographically binds the SBOM to the image digest via an In-Toto attestation. This is the **strongest guarantee**: it proves that THIS SBOM describes exactly THIS image. The attestation is stored in the registry alongside the image. |
+| 11 | **Upload to Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Sends the SBOM to Dependency-Track for continuous monitoring. DTrack receives new CVEs daily and alerts if a component in your image becomes vulnerable, even without a rebuild. Optional step (skipped if `dtrack-hostname` is empty). |
+
+### Visual summary
+
+```
+  Code + Dockerfile
+        |
+        v
+  [1-3] BUILD ──────────────> Local image
+        |
+        v
+  [4]   SBOM ──────────────> sbom-image-trivy.json
+        |
+        v
+  [5]   SCAN (trivy image) ─> HIGH/CRITICAL vulnerabilities?
+        |                         |
+        | OK                      | FAIL → STOP
+        v
+  [6]   POLICY (OPA) ──────> deny / warn?
+        |                         |
+        | OK                      | FAIL → STOP
+        v
+  ═══ GATE PASSED ═══
+        |
+        v
+  [7-8] PUSH ──────────────> Image in registry
+        |
+        v
+  [9]   SIGN ──────────────> Cosign signature (keyless)
+        |
+        v
+  [10]  ATTEST ────────────> SBOM bound to digest (In-Toto)
+        |
+        v
+  [11]  DTRACK ────────────> Continuous CVE monitoring
 ```
 
 ---

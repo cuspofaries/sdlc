@@ -22,24 +22,74 @@ Trois repos distincts (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formaient
 
 ---
 
-## Flux du pipeline
+## Pipeline — Checklist des etapes
+
+### PHASE 1 — BUILD (rien ne sort du runner)
+
+| # | Etape | Outil | Explication |
+|---|-------|-------|-------------|
+| 1 | **Checkout code** | `actions/checkout` | Clone le repo applicatif (Dockerfile, code source, policies custom). |
+| 2 | **Checkout toolchain** | `actions/checkout` | Clone le repo `sdlc` dans `.sdlc/` pour acceder aux policies baseline et aux scripts. |
+| 3 | **Build image** | `docker/build-push-action` | Construit l'image conteneur **localement** (`load: true`, `push: false`). Rien ne quitte le runner a ce stade. |
+
+### PHASE 2 — ANALYZE (sur l'image locale, avant toute publication)
+
+| # | Etape | Outil | Explication |
+|---|-------|-------|-------------|
+| 4 | **Generer le SBOM** | `trivy image --format cyclonedx` | Scanne l'image locale et produit un inventaire complet (OS packages, librairies, versions, licences) au format CycloneDX JSON. Le SBOM repond a la question : "qu'est-ce qui est reellement dans mon conteneur ?" |
+| 5 | **Scanner les vulnerabilites** | `trivy image --exit-code` | Scanne l'image **directement** (pas le SBOM) pour les CVE de severite HIGH et CRITICAL. Utilise `--exit-code 1` pour bloquer ou `0` pour avertir sans bloquer. C'est un scan direct sur l'image, plus fiable que scanner le SBOM car Trivy accede aux metadonnees du systeme de fichiers. |
+| 6 | **Evaluer les politiques OPA** | `opa eval` | Evalue le SBOM contre des regles Rego en deux niveaux : **deny** (bloquant — fait echouer le pipeline) et **warn** (consultatif — affiche un avertissement). Les politiques baseline (`sdlc/policies/`) sont automatiquement fusionnees avec les politiques custom du repo applicatif (`policies/`) si elles existent. Exemples de regles : packages bloques (supply chain attacks connus), composants sans version, licences non approuvees. |
 
 ```
-PHASE 1 — BUILD (rien ne sort du runner)
-  1. Checkout
-  2. Build image (--load, pas de push)
+══════════════════════════════════════════════════════
+  GATE : si l'etape 5 ou 6 echoue → PIPELINE STOP
+  Rien n'est publie. L'image reste locale.
+══════════════════════════════════════════════════════
+```
 
-PHASE 2 — ANALYZE (sur l'image locale)
-  3. Génération SBOM (trivy image --format cyclonedx)
-  4. Scan vulnérabilités (trivy image direct)
-  5. Évaluation politiques OPA (baseline + custom)
-  ══ GATE : si 4 ou 5 échoue → STOP ══
+### PHASE 3 — PUBLISH (seulement si la gate passe)
 
-PHASE 3 — PUBLISH (seulement si la gate passe)
-  6. Push de l'image vers le registry
-  7. Signature du digest (Cosign keyless)
-  8. Attestation du SBOM au digest (Cosign attest)
-  9. Upload du SBOM vers Dependency-Track
+| # | Etape | Outil | Explication |
+|---|-------|-------|-------------|
+| 7 | **Login au registry** | `docker/login-action` | S'authentifie au registry conteneur (GHCR, ACR, etc.) avec le token fourni. |
+| 8 | **Push de l'image** | `docker push` | Pousse l'image vers le registry. A ce stade, on sait qu'elle a passe le scan et les politiques. |
+| 9 | **Signer le digest** | `cosign sign --yes` | Signe le digest de l'image avec Cosign en mode **keyless** (OIDC via Sigstore). La signature prouve que l'image a ete produite par cette pipeline CI/CD et n'a pas ete alteree. Verifiable par n'importe qui avec `cosign verify`. |
+| 10 | **Attester le SBOM** | `cosign attest --type cyclonedx` | Lie cryptographiquement le SBOM au digest de l'image via une attestation In-Toto. C'est la **garantie la plus forte** : elle prouve que CE SBOM decrit exactement CETTE image. L'attestation est stockee dans le registry a cote de l'image. |
+| 11 | **Upload vers Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Envoie le SBOM a Dependency-Track pour le monitoring continu. DTrack recoit les nouvelles CVE quotidiennement et alerte si un composant de votre image devient vulnerable, meme sans rebuild. Etape optionnelle (ignoree si `dtrack-hostname` est vide). |
+
+### Resume visuel
+
+```
+  Code + Dockerfile
+        |
+        v
+  [1-3] BUILD ──────────────> Image locale
+        |
+        v
+  [4]   SBOM ──────────────> sbom-image-trivy.json
+        |
+        v
+  [5]   SCAN (trivy image) ─> Vulnerabilites HIGH/CRITICAL ?
+        |                         |
+        | OK                      | FAIL → STOP
+        v
+  [6]   POLICY (OPA) ──────> deny / warn ?
+        |                         |
+        | OK                      | FAIL → STOP
+        v
+  ═══ GATE PASSED ═══
+        |
+        v
+  [7-8] PUSH ──────────────> Image dans le registry
+        |
+        v
+  [9]   SIGN ──────────────> Signature Cosign (keyless)
+        |
+        v
+  [10]  ATTEST ────────────> SBOM lie au digest (In-Toto)
+        |
+        v
+  [11]  DTRACK ────────────> Monitoring continu des CVE
 ```
 
 ---
