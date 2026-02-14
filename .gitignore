@@ -1,0 +1,30 @@
+# SBOM outputs
+output/
+
+# Cosign keys (NEVER commit private keys)
+cosign.key
+cosign.pub
+*.sig
+*.cert
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / Tools
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Docker
+.docker/
+
+# Node (cdxgen)
+node_modules/

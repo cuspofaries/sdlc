@@ -1,0 +1,58 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:enableMajor",
+    ":semanticCommits",
+    "schedule:earlyMondays"
+  ],
+
+  "labels": ["dependencies", "automated"],
+
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "vulnerability"],
+    "schedule": ["at any time"]
+  },
+
+  "osvVulnerabilityAlerts": true,
+
+  "separateMinorPatch": true,
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+
+  "packageRules": [
+    {
+      "description": "Auto-merge patch updates for stable packages",
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "matchCurrentVersion": "!/^0/",
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Group all Docker updates",
+      "matchDatasources": ["docker"],
+      "groupName": "Docker images",
+      "labels": ["dependencies", "docker"]
+    },
+    {
+      "description": "Group Python dependency updates",
+      "matchManagers": ["pip_requirements"],
+      "groupName": "Python dependencies"
+    },
+    {
+      "description": "Flag major updates for manual review",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["dependencies", "major-update", "manual-review"]
+    },
+    {
+      "description": "Security updates bypass schedule",
+      "matchCategories": ["security"],
+      "schedule": ["at any time"],
+      "automerge": true,
+      "prPriority": 10
+    }
+  ]
+}

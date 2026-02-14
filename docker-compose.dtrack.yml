@@ -1,0 +1,49 @@
+# =============================================================================
+# Dependency-Track - Continuous SBOM Monitoring
+# =============================================================================
+# Usage:
+#   task dtrack:up    → Start
+#   task dtrack:down  → Stop
+#
+# UI:     http://localhost:8081
+# API:    http://localhost:8081/api
+# Creds:  admin / admin (change on first login)
+# =============================================================================
+
+services:
+
+  dtrack-apiserver:
+    image: dependencytrack/apiserver:latest
+    container_name: dtrack-apiserver
+    ports:
+      - "8081:8080"
+    environment:
+      # Reduce memory for POC (default wants 8GB+)
+      - EXTRA_JAVA_OPTIONS=-Xmx2g
+      # Auto-refresh NVD data
+      - ALPINE_DATABASE_MODE=external
+    volumes:
+      - dtrack-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  dtrack-frontend:
+    image: dependencytrack/frontend:latest
+    container_name: dtrack-frontend
+    ports:
+      - "8082:8080"
+    environment:
+      - API_BASE_URL=http://localhost:8081
+    depends_on:
+      dtrack-apiserver:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  dtrack-data:
+    driver: local

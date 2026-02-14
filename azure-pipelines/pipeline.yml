@@ -1,0 +1,190 @@
+# =============================================================================
+# Azure DevOps - Unified Supply Chain Security Pipeline
+# =============================================================================
+# Shift-left approach: build → analyze (GATE) → publish
+# Calls the SAME Taskfile targets as GitHub Actions.
+# =============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+schedules:
+  # Daily vulnerability rescan at 2 AM UTC
+  - cron: '0 2 * * *'
+    displayName: 'Daily SBOM Rescan'
+    branches:
+      include:
+        - main
+    always: true
+
+variables:
+  IMAGE_NAME: 'supply-chain-poc'
+  IMAGE_TAG: '$(Build.SourceVersion)'
+  REGISTRY: '$(ACR_NAME).azurecr.io'   # Set ACR_NAME in Variable Group
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+
+  # ===========================================================================
+  # PHASE 1 + 2 — Build & Analyze (nothing leaves the runner)
+  # ===========================================================================
+  - stage: BuildAndAnalyze
+    displayName: 'Build & Analyze'
+    condition: ne(variables['Build.Reason'], 'Schedule')
+
+    jobs:
+      - job: BuildAndAnalyze
+        displayName: 'Build, SBOM, Scan & Policy'
+        timeoutInMinutes: 30
+
+        steps:
+          - checkout: self
+
+          # Install go-task
+          - script: |
+              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+            displayName: 'Install Task'
+
+          # Install SBOM toolchain
+          - script: sudo task install
+            displayName: 'Install SBOM Tools'
+
+          # PHASE 1 — Build (local only, no push)
+          - script: task build IMAGE_TAG=$(IMAGE_TAG)
+            displayName: 'Build Image (local, no push)'
+
+          # PHASE 2 — Analyze
+          - script: task sbom:generate IMAGE_TAG=$(IMAGE_TAG)
+            displayName: 'Generate Image SBOM'
+
+          - script: task sbom:scan IMAGE_TAG=$(IMAGE_TAG)
+            displayName: 'Scan Vulnerabilities (trivy image)'
+
+          - script: task sbom:policy
+            displayName: 'OPA Policy Check'
+
+          # Publish outputs for next stage
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish SBOM Outputs'
+            condition: always()
+            inputs:
+              PathtoPublish: 'output'
+              ArtifactName: 'sbom-outputs'
+
+  # ===========================================================================
+  # PHASE 3 — Publish (only if BuildAndAnalyze succeeded)
+  # ===========================================================================
+  - stage: Publish
+    displayName: 'Publish & Sign'
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'Schedule'))
+    dependsOn: BuildAndAnalyze
+
+    jobs:
+      - job: Publish
+        displayName: 'Push, Sign & Attest'
+        timeoutInMinutes: 15
+
+        steps:
+          - checkout: self
+
+          # Install tools needed for publish phase
+          - script: |
+              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+            displayName: 'Install Task'
+
+          - script: sudo task install:cosign
+            displayName: 'Install Cosign'
+
+          # Download SBOM from previous stage
+          - task: DownloadBuildArtifacts@1
+            displayName: 'Download SBOM Outputs'
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: 'sbom-outputs'
+              downloadPath: '$(System.DefaultWorkingDirectory)'
+
+          - script: |
+              cp -r sbom-outputs/* output/ 2>/dev/null || true
+            displayName: 'Restore SBOM Outputs'
+
+          # Rebuild image (needed for push — build cache makes this fast)
+          - script: task build IMAGE_TAG=$(IMAGE_TAG)
+            displayName: 'Rebuild Image (from cache)'
+
+          # Push
+          - script: task push IMAGE_TAG=$(IMAGE_TAG)
+            displayName: 'Push Image to Registry'
+
+          # Sign
+          - script: task image:sign IMAGE_TAG=$(IMAGE_TAG)
+            displayName: 'Sign Image Digest'
+
+          # Attest SBOM
+          - script: task sbom:attest IMAGE_TAG=$(IMAGE_TAG)
+            displayName: 'Attest SBOM to Image'
+
+          # Upload to Dependency-Track
+          - script: |
+              if [ -n "$(DTRACK_API_KEY)" ]; then
+                task sbom:upload \
+                  DTRACK_URL=$(DTRACK_URL) \
+                  DTRACK_API_KEY=$(DTRACK_API_KEY) \
+                  DTRACK_PROJECT=$(IMAGE_NAME)
+              else
+                echo "DTRACK_API_KEY not set, skipping upload"
+              fi
+            displayName: 'Upload SBOM to Dependency-Track'
+
+  # ===========================================================================
+  # Daily Rescan (scheduled)
+  # ===========================================================================
+  - stage: DailyRescan
+    displayName: 'Daily Vulnerability Rescan'
+    condition: eq(variables['Build.Reason'], 'Schedule')
+
+    jobs:
+      - job: Rescan
+        displayName: 'Rescan SBOMs'
+
+        steps:
+          - checkout: self
+
+          - script: |
+              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+            displayName: 'Install Task'
+
+          - script: sudo task install:trivy
+            displayName: 'Install Scan Tools'
+
+          # Download last SBOM from previous pipeline run
+          - task: DownloadBuildArtifacts@1
+            displayName: 'Download Previous SBOM'
+            inputs:
+              buildType: 'specific'
+              project: '$(System.TeamProject)'
+              pipeline: '$(System.DefinitionId)'
+              buildVersionToDownload: 'latest'
+              downloadType: 'single'
+              artifactName: 'sbom-outputs'
+              downloadPath: '$(System.DefaultWorkingDirectory)'
+            continueOnError: true
+
+          - script: |
+              if [ -f "sbom-outputs/sbom/image/sbom-image-trivy.json" ]; then
+                mkdir -p output
+                cp -r sbom-outputs/* output/ 2>/dev/null || true
+                task sbom:scan TRIVY_EXIT_CODE=0
+              else
+                echo "No previous SBOM found, skipping rescan"
+              fi
+            displayName: 'Rescan for New Vulns'

@@ -1,0 +1,54 @@
+# =============================================================================
+# CI - Validate SDLC Toolchain
+# =============================================================================
+# Ensures scripts, policies, and tool installation work correctly.
+# The actual supply chain pipeline is consumed via supply-chain-reusable.yml
+# by application repos.
+# =============================================================================
+
+name: Validate Toolchain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Task
+        run: |
+          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+
+      - name: Install SBOM tools
+        run: sudo task install
+
+      - name: Verify tools installed
+        run: task install:verify
+
+      - name: Validate OPA policies
+        run: |
+          opa check policies/sbom-compliance.rego
+          echo "Policies valid"
+
+      - name: Validate scripts are executable
+        run: |
+          for script in scripts/*.sh; do
+            if [ ! -x "$script" ]; then
+              echo "ERROR: $script is not executable"
+              exit 1
+            fi
+            bash -n "$script"
+            echo "OK: $script"
+          done
