@@ -293,6 +293,15 @@ jobs:
       # Post-attestation verification: confirm signature and attestation
       # are retrievable from the registry. This is the automated proof
       # that the publish phase actually persisted what it claims.
+      - name: Attest SLSA build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ inputs.image-name }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+      # Post-attestation verification: confirm all three artifacts are
+      # retrievable from the registry (signature + SBOM + SLSA provenance).
       - name: Verify signature in registry
         run: |
           mkdir -p output/verify
@@ -303,22 +312,25 @@ jobs:
             "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-signature.log
           echo "Signature verified in registry"
 
-      - name: Verify attestation in registry
+      - name: Verify SBOM attestation in registry
         run: |
-          echo "Verifying attestation for digest: ${{ steps.digest.outputs.image }}"
+          echo "Verifying SBOM attestation for digest: ${{ steps.digest.outputs.image }}"
           cosign verify-attestation \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
             --type cyclonedx \
-            "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-attestation.log
+            "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-attestation-sbom.log
           echo "SBOM attestation verified in registry"
 
-      - name: Attest SLSA build provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ inputs.image-name }}
-          subject-digest: ${{ steps.digest.outputs.digest }}
-          push-to-registry: true
+      - name: Verify SLSA provenance in registry
+        run: |
+          echo "Verifying SLSA provenance for: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ inputs.image-name }}@${{ steps.digest.outputs.digest }}"
+          gh attestation verify \
+            "oci://${{ inputs.registry }}/${{ github.repository_owner }}/${{ inputs.image-name }}@${{ steps.digest.outputs.digest }}" \
+            --owner "${{ github.repository_owner }}" 2>&1 | tee output/verify/verify-attestation-slsa.log
+          echo "SLSA provenance verified in registry"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       # Upload the attested SBOM to Dependency-Track for continuous monitoring.
       # Non-blocking: DTrack is governance/monitoring, not a CI gate.

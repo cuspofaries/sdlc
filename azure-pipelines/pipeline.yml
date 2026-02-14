@@ -337,25 +337,49 @@ stages:
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
 
-          # Post-attest verification: confirm attestation is retrievable from registry
+          # Post-attest verification: confirm SBOM attestation is retrievable
           - script: |
-              echo "Verifying attestation for digest: $(IMAGE_DIGEST)"
+              echo "Verifying SBOM attestation for digest: $(IMAGE_DIGEST)"
               if [ -n "$(COSIGN_KV_KEY)" ]; then
                 echo "Mode: KMS"
                 cosign verify-attestation \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   --type cyclonedx \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation.log
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation-sbom.log
               else
                 echo "Mode: keyless"
                 cosign verify-attestation \
                   --certificate-oidc-issuer https://vstoken.dev.azure.com \
                   --certificate-identity-regexp "https://dev.azure.com/cuspofaries/sdlc/_build" \
                   --type cyclonedx \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation.log
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation-sbom.log
               fi
               echo "SBOM attestation verified in registry"
-            displayName: 'Verify Attestation in Registry'
+            displayName: 'Verify SBOM Attestation in Registry'
+            env:
+              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+
+          # Post-attest verification: confirm SLSA provenance is retrievable
+          - script: |
+              echo "Verifying SLSA provenance for digest: $(IMAGE_DIGEST)"
+              if [ -n "$(COSIGN_KV_KEY)" ]; then
+                echo "Mode: KMS"
+                cosign verify-attestation \
+                  --key "azurekms://$(COSIGN_KV_KEY)" \
+                  --type slsaprovenance \
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation-slsa.log
+              else
+                echo "Mode: keyless"
+                cosign verify-attestation \
+                  --certificate-oidc-issuer https://vstoken.dev.azure.com \
+                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/sdlc/_build" \
+                  --type slsaprovenance \
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation-slsa.log
+              fi
+              echo "SLSA provenance verified in registry"
+            displayName: 'Verify SLSA Provenance in Registry'
             env:
               AZURE_TENANT_ID: $(AZURE_TENANT_ID)
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
