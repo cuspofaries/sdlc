@@ -231,6 +231,17 @@ Le pipeline est implemente sur trois plateformes avec le **meme flux logique** :
 
 Les trois partagent le meme ordre (build → analyse → gate → publication), les memes outils (Trivy, Cosign, OPA), la meme priorite de signature (KMS > keyless > keypair), et les memes invariants (integrite SBOM, signature sur digest uniquement, verification post-publication). Quand un mecanisme est ajoute a l'un, il est ajoute aux trois. Le workflow `validate-toolchain.yml` inclut un **test end-to-end** (job `e2e-test`) qui construit une image de test, genere le SBOM, execute tous les scans et verifications de politique, verifie l'invariant d'integrite SBOM, puis signe, atteste et verifie avec un registry local. Cela detecte les regressions d'integration que des verifications unitaires ne detecteraient pas.
 
+**Test e2e : relaxations connues vs production** — chacune est documentee inline dans le workflow avec sa justification et ou le comportement reel est teste :
+
+| Relaxation | Raison | Ou le comportement reel est teste |
+|------------|--------|-----------------------------------|
+| `TRIVY_EXIT_CODE=0` | L'image de test (alpine) a des CVEs connues | Logique de gate testee par les repos consommateurs via le workflow reutilisable |
+| Signature par keypair (pas keyless) | Keyless necessite une identite OIDC depuis un vrai registry | Repos consommateurs utilisant `supply-chain-reusable.yml` avec de vrais registries |
+| `registry:2` local (pas de TLS/auth/referrers) | Teste la mecanique cosign store/retrieve | Repos consommateurs poussant vers ghcr.io / ACR |
+| Runner unique (pas de save/load) | Le pattern multi-stage ADO est specifique a la plateforme | `azure-pipelines/pipeline.yml` avec docker save/load + re-verification ImageID |
+
+**Regle : chaque relaxation doit documenter POURQUOI et OU le comportement reel est teste. Si on ne peut pas repondre aux deux, on ne relaxe pas.**
+
 ### Output du workflow pour la consommation downstream
 
 Le workflow reutilisable GitHub Actions expose un output `image` contenant la **reference complete de l'image avec digest** (`registry/owner/name@sha256:...`). Les jobs en aval peuvent utiliser cet output pour deployer, scanner ou referencer l'image exacte qui a ete construite, signee et attestee — sans avoir besoin de resoudre le digest eux-memes.

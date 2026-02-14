@@ -57,8 +57,34 @@ jobs:
   # End-to-end pipeline test
   # =========================================================================
   # Builds a minimal test image and runs the full local pipeline chain:
-  # build → SBOM generate → scan → policy → verify integrity
-  # Proves every step works together, not just in isolation.
+  # build → SBOM generate → scan → policy → verify integrity → sign → attest → verify
+  #
+  # WHAT THIS TESTS:
+  #   - Tool integration (trivy, cosign, opa work together)
+  #   - SBOM structure and image-SBOM alignment (ImageID cross-check)
+  #   - SBOM integrity invariant (SHA256 unchanged across steps)
+  #   - Digest-only signing (resolved after push, never a tag)
+  #   - Full sign → attest → verify round-trip
+  #   - OPA policy evaluation (deny + warn rules)
+  #
+  # KNOWN RELAXATIONS vs PRODUCTION (each justified):
+  #   1. TRIVY_EXIT_CODE=0 — alpine:3.19 has known CVEs; the test validates
+  #      that trivy runs and produces output, not that the image is vuln-free.
+  #      The gate logic itself (exit code propagation) is tested by the
+  #      reusable workflow's own consumers.
+  #   2. Keypair signing (not keyless) — keyless requires OIDC identity from
+  #      a real registry push. Keypair tests the cosign sign/verify mechanics.
+  #      Keyless identity verification is tested by consumer repos calling
+  #      supply-chain-reusable.yml with real registries.
+  #   3. Local registry (registry:2) — no OCI referrers API, no TLS, no auth.
+  #      Tests cosign's ability to store/retrieve signatures, not registry
+  #      compatibility. Real registry behavior is tested by consumer repos.
+  #   4. Single runner (no save/load) — the ADO multi-stage pattern (docker
+  #      save/load + ImageID re-verification) is platform-specific and tested
+  #      in azure-pipelines/pipeline.yml. This test covers the shared logic.
+  #
+  # If you add a relaxation here, document WHY and WHERE the real behavior
+  # is tested instead. If you can't answer both, don't relax it.
   # =========================================================================
   e2e-test:
     runs-on: ubuntu-latest
@@ -136,6 +162,9 @@ jobs:
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
           echo "SBOM SHA256: $SHA256"
 
+      # RELAXATION 1: TRIVY_EXIT_CODE=0 because alpine:3.19 has known CVEs.
+      # We test that trivy runs and produces scan output, not that this test
+      # image is vulnerability-free. Gate logic is tested by consumer repos.
       - name: Scan vulnerabilities (trivy image)
         run: task sbom:scan IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost TRIVY_EXIT_CODE=0
 
@@ -157,9 +186,15 @@ jobs:
           fi
           echo "SBOM integrity invariant verified end-to-end"
 
+      # RELAXATION 2: Keypair signing (not keyless). Keyless requires OIDC
+      # identity from a real registry. Keypair tests cosign mechanics.
+      # Keyless identity is tested by consumer repos with real registries.
       - name: Generate keypair for signing test
         run: COSIGN_PASSWORD="" cosign generate-key-pair
 
+      # RELAXATION 3: Local registry:2 (no TLS, no auth, no OCI referrers).
+      # Tests cosign store/retrieve, not registry compatibility.
+      # Real registry behavior is tested by consumer repos.
       - name: Start local registry
         run: |
           docker run -d -p 5000:5000 --name registry registry:2
