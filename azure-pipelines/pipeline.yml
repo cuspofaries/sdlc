@@ -270,26 +270,28 @@ stages:
               PROVENANCE=$(mktemp)
               cat > "$PROVENANCE" <<PRED
               {
-                "buildDefinition": {
-                  "buildType": "https://slsa.dev/container-based-build/v0.1",
-                  "externalParameters": {
-                    "source": "$(Build.Repository.Uri)",
-                    "revision": "$(Build.SourceVersion)"
-                  },
-                  "internalParameters": {
-                    "buildId": "$(Build.BuildId)",
-                    "buildUrl": "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
-                  }
+                "builder": {
+                  "id": "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
                 },
-                "runDetails": {
-                  "builder": {
-                    "id": "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+                "buildType": "https://slsa.dev/container-based-build/v0.1",
+                "invocation": {
+                  "configSource": {
+                    "uri": "$(Build.Repository.Uri)",
+                    "digest": { "sha1": "$(Build.SourceVersion)" }
                   },
-                  "metadata": {
-                    "invocationId": "$(Build.BuildId)",
-                    "startedOn": "$TIMESTAMP"
+                  "parameters": { "buildId": "$(Build.BuildId)" }
+                },
+                "metadata": {
+                  "buildInvocationId": "$(Build.BuildId)",
+                  "buildStartedOn": "$TIMESTAMP",
+                  "completeness": { "parameters": true, "environment": false, "materials": false }
+                },
+                "materials": [
+                  {
+                    "uri": "$(Build.Repository.Uri)",
+                    "digest": { "sha1": "$(Build.SourceVersion)" }
                   }
-                }
+                ]
               }
               PRED
               if [ -n "$(COSIGN_KV_KEY)" ]; then

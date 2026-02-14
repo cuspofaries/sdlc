@@ -4,7 +4,7 @@
 # =============================================================================
 # Usage: slsa-provenance.sh <image> <cosign-key>
 #
-# Generates a SLSA v1.0 provenance predicate (in-toto format) and attests it
+# Generates a SLSA v0.2 provenance predicate (in-toto format) and attests it
 # to the image digest using cosign. Falls back to the same KMS > keyless >
 # keypair priority as image-sign.sh.
 #
@@ -29,26 +29,38 @@ PROVENANCE_FILE=$(mktemp /tmp/slsa-provenance.XXXXXX.json)
 
 cat > "$PROVENANCE_FILE" <<PRED
 {
-  "buildDefinition": {
-    "buildType": "https://slsa.dev/container-based-build/v0.1",
-    "externalParameters": {
-      "source": "${SOURCE_REPO:-unknown}",
-      "revision": "${SOURCE_SHA:-unknown}"
+  "builder": {
+    "id": "${BUILD_URL:-local-builder}"
+  },
+  "buildType": "https://slsa.dev/container-based-build/v0.1",
+  "invocation": {
+    "configSource": {
+      "uri": "${SOURCE_REPO:-unknown}",
+      "digest": {
+        "sha1": "${SOURCE_SHA:-unknown}"
+      }
     },
-    "internalParameters": {
-      "buildId": "${BUILD_ID:-local}",
-      "buildUrl": "${BUILD_URL:-}"
+    "parameters": {
+      "buildId": "${BUILD_ID:-local}"
     }
   },
-  "runDetails": {
-    "builder": {
-      "id": "${BUILD_URL:-local-builder}"
-    },
-    "metadata": {
-      "invocationId": "${BUILD_ID:-local}",
-      "startedOn": "$TIMESTAMP"
+  "metadata": {
+    "buildInvocationId": "${BUILD_ID:-local}",
+    "buildStartedOn": "$TIMESTAMP",
+    "completeness": {
+      "parameters": true,
+      "environment": false,
+      "materials": false
     }
-  }
+  },
+  "materials": [
+    {
+      "uri": "${SOURCE_REPO:-unknown}",
+      "digest": {
+        "sha1": "${SOURCE_SHA:-unknown}"
+      }
+    }
+  ]
 }
 PRED
 
