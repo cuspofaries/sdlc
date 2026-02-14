@@ -99,12 +99,14 @@ elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
 
 elif [ -f "$COSIGN_KEY" ]; then
     # ── Local / POC: keypair ──
+    # Attestation is stored in the OCI registry.
+    # Rekor transparency log entry is uploaded by default for auditability.
+    # For air-gapped/offline environments, add --no-upload=true.
     echo "── Mode: Keypair (${COSIGN_KEY}) ──"
-    cosign attest \
+    cosign attest --yes \
         --key "$COSIGN_KEY" \
         --predicate "$SBOM_FILE" \
         --type cyclonedx \
-        --no-upload=true \
         "$IMAGE_DIGEST"
 
 else

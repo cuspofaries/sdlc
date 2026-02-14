@@ -70,11 +70,10 @@ if docker inspect "$IMAGE" &>/dev/null; then
 
         elif [ -f "$COSIGN_KEY" ]; then
             echo "   Mode: Keypair"
-            cosign attest \
+            cosign attest --yes \
                 --key "$COSIGN_KEY" \
                 --predicate "$SBOM_FILE" \
                 --type cyclonedx \
-                --no-upload=true \
                 "$IMAGE_DIGEST" 2>/dev/null && ATTEST_OK=true
         fi
     fi
