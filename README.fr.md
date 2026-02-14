@@ -460,6 +460,7 @@ sdlc/
 │   ├── image-sign.sh
 │   ├── image-verify.sh
 │   ├── sbom-attest.sh
+│   ├── sbom-integrity.sh
 │   ├── sbom-generate-source.sh
 │   ├── sbom-policy.sh
 │   ├── sbom-sign.sh

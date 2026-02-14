@@ -29,7 +29,7 @@ jobs:
 
       - name: Install Task
         run: |
-          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0
 
       - name: Install SBOM tools
         run: sudo task install
@@ -110,7 +110,7 @@ jobs:
 
       - name: Install Task
         run: |
-          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0
 
       - name: Install SBOM tools
         run: sudo task install
@@ -153,22 +153,8 @@ jobs:
           [ "$FORMAT" = "CycloneDX" ] || { echo "FATAL: Not CycloneDX"; exit 1; }
           [ "$COMPONENTS" -gt 0 ] || { echo "FATAL: Zero components"; exit 1; }
 
-      - name: "Assert: Image-SBOM alignment (ImageID cross-check)"
-        run: |
-          ACTUAL_ID=$(docker inspect --format='{{.Id}}' "localhost:5000/sdlc-e2e-test:test")
-          SBOM_ID=$(jq -r '.metadata.component.properties[]? | select(.name == "aquasecurity:trivy:ImageID") | .value' output/sbom/image/sbom-image-trivy.json 2>/dev/null || echo "")
-          echo "Image ID (docker): $ACTUAL_ID"
-          echo "Image ID (SBOM):   $SBOM_ID"
-          if [ -n "$SBOM_ID" ] && [ "$ACTUAL_ID" != "$SBOM_ID" ]; then
-            echo "FATAL: Image ID mismatch"; exit 1
-          fi
-
-      - name: "Assert: Record SBOM SHA256"
-        id: sbom-hash
-        run: |
-          SHA256=$(sha256sum output/sbom/image/sbom-image-trivy.json | awk '{print $1}')
-          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
-          echo "SBOM SHA256: $SHA256"
+      - name: "Assert: Record SBOM integrity + image alignment"
+        run: ./scripts/sbom-integrity.sh record output/sbom/image/sbom-image-trivy.json localhost:5000/sdlc-e2e-test:test
 
       # No TRIVY_EXIT_CODE override — uses default "1" (fail-closed).
       # If alpine:latest has HIGH/CRITICAL CVEs, this fails. Fix the
@@ -183,15 +169,7 @@ jobs:
         run: task sbom:policy
 
       - name: "Assert: SBOM integrity (SHA256 unchanged after scan + policy)"
-        run: |
-          EXPECTED="${{ steps.sbom-hash.outputs.sha256 }}"
-          ACTUAL=$(sha256sum output/sbom/image/sbom-image-trivy.json | awk '{print $1}')
-          echo "Expected: $EXPECTED"
-          echo "Actual:   $ACTUAL"
-          if [ "$EXPECTED" != "$ACTUAL" ]; then
-            echo "FATAL: SBOM was modified during pipeline — integrity broken"
-            exit 1
-          fi
+        run: ./scripts/sbom-integrity.sh verify output/sbom/image/sbom-image-trivy.json localhost:5000/sdlc-e2e-test:test
 
       # --- PHASE 3: PUBLISH (same tasks, same digest resolution) ---
       # Tasks resolve RepoDigest internally — same code path as prod.
