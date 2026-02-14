@@ -155,11 +155,7 @@ tasks:
   build:
     desc: "Build container image (local only, no push)"
     cmds:
-      - |
-        docker build \
-          -t {{.IMAGE}} \
-          -f {{.CONTEXT}}/{{.DOCKERFILE}} \
-          {{.CONTEXT}}
+      - docker build -t {{.IMAGE}} -f {{.CONTEXT}}/{{.DOCKERFILE}} {{.CONTEXT}}
       - echo "Image built: {{.IMAGE}}"
 
   # ==========================================================================
@@ -311,11 +307,7 @@ tasks:
   sbom:verify:blob:
     desc: "Verify standalone SBOM blob signature"
     cmds:
-      - |
-        cosign verify-blob \
-          --key {{.COSIGN_PUB}} \
-          --signature {{.SBOM_DIR}}/image/sbom-image-trivy.json.sig \
-          {{.SBOM_DIR}}/image/sbom-image-trivy.json
+      - cosign verify-blob --key {{.COSIGN_PUB}} --signature {{.SBOM_DIR}}/image/sbom-image-trivy.json.sig {{.SBOM_DIR}}/image/sbom-image-trivy.json
       - echo "SBOM signature valid"
 
   sbom:tamper:test:
@@ -330,10 +322,7 @@ tasks:
   sbom:store:
     desc: "Store SBOM as OCI artifact in registry"
     cmds:
-      - |
-        oras push {{.REGISTRY}}/{{.IMAGE_NAME}}:{{.IMAGE_TAG}}-sbom \
-          --artifact-type application/vnd.cyclonedx+json \
-          {{.SBOM_DIR}}/image/sbom-image-trivy.json:application/json
+      - oras push {{.REGISTRY}}/{{.IMAGE_NAME}}:{{.IMAGE_TAG}}-sbom --artifact-type application/vnd.cyclonedx+json {{.SBOM_DIR}}/image/sbom-image-trivy.json:application/json
       - echo "SBOM stored -> {{.REGISTRY}}/{{.IMAGE_NAME}}:{{.IMAGE_TAG}}-sbom"
 
   sbom:fetch:
