@@ -48,6 +48,13 @@ vars:
   # -- Signing --
   COSIGN_KEY: ./cosign.key
   COSIGN_PUB: ./cosign.pub
+
+  # -- Tool versions (pinned for reproducibility) --
+  TRIVY_VERSION: '0.58.1'
+  COSIGN_VERSION: 'v2.4.1'
+  CDXGEN_VERSION: '10.10.7'
+  OPA_VERSION: 'v0.71.0'
+  ORAS_VERSION: '1.2.2'
   # Azure Key Vault KMS (recommended for enterprise)
   # Example: myorgvault.vault.azure.net/cosign-key
   COSIGN_KMS_KEY: '{{.COSIGN_KMS_KEY | default ""}}'
@@ -73,13 +80,13 @@ tasks:
       - task: install:verify
 
   install:trivy:
-    desc: "Install Trivy (SBOM generator + vulnerability scanner)"
+    desc: "Install Trivy {{.TRIVY_VERSION}}"
     cmds:
       - |
         for i in 1 2 3; do
-          echo "Attempt $i to install trivy..."
-          if curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin; then
-            echo "✅ Trivy installed successfully"
+          echo "Attempt $i to install trivy {{.TRIVY_VERSION}}..."
+          if curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v{{.TRIVY_VERSION}}; then
+            echo "✅ Trivy {{.TRIVY_VERSION}} installed"
             break
           else
             echo "⚠️  Attempt $i failed, retrying in 5 seconds..."
@@ -94,45 +101,45 @@ tasks:
       - which trivy
 
   install:cosign:
-    desc: "Install Cosign (signing)"
+    desc: "Install Cosign {{.COSIGN_VERSION}}"
     cmds:
       - |
-        COSIGN_VERSION=$(curl -sL https://api.github.com/repos/sigstore/cosign/releases/latest | grep tag_name | cut -d '"' -f4)
-        curl -sLO "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+        curl -sLO "https://github.com/sigstore/cosign/releases/download/{{.COSIGN_VERSION}}/cosign-linux-amd64"
         chmod +x cosign-linux-amd64
-        mv cosign-linux-amd64 cosign
-        sudo install -m 755 cosign /usr/local/bin/cosign
-        rm -f cosign
+        sudo install -m 755 cosign-linux-amd64 /usr/local/bin/cosign
+        rm -f cosign-linux-amd64
+        echo "✅ Cosign {{.COSIGN_VERSION}} installed"
     status:
       - which cosign
 
   install:cdxgen:
-    desc: "Install cdxgen (source SBOM generator)"
+    desc: "Install cdxgen {{.CDXGEN_VERSION}}"
     cmds:
-      - npm install -g @cyclonedx/cdxgen
+      - npm install -g @cyclonedx/cdxgen@{{.CDXGEN_VERSION}}
     status:
       - which cdxgen
 
   install:opa:
-    desc: "Install OPA (policy engine)"
+    desc: "Install OPA {{.OPA_VERSION}}"
     cmds:
       - |
-        curl -sL -o opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
+        curl -sL -o opa "https://openpolicyagent.org/downloads/{{.OPA_VERSION}}/opa_linux_amd64_static"
         chmod +x opa
         sudo install -m 755 opa /usr/local/bin/opa
         rm -f opa
+        echo "✅ OPA {{.OPA_VERSION}} installed"
     status:
       - which opa
 
   install:oras:
-    desc: "Install ORAS (OCI artifact push)"
+    desc: "Install ORAS {{.ORAS_VERSION}}"
     cmds:
       - |
-        ORAS_VERSION=$(curl -sL https://api.github.com/repos/oras-project/oras/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/v//')
-        curl -sLO "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
-        tar -xzf oras_${ORAS_VERSION}_linux_amd64.tar.gz
+        curl -sLO "https://github.com/oras-project/oras/releases/download/v{{.ORAS_VERSION}}/oras_{{.ORAS_VERSION}}_linux_amd64.tar.gz"
+        tar -xzf oras_{{.ORAS_VERSION}}_linux_amd64.tar.gz
         sudo install -m 755 oras /usr/local/bin/oras
-        rm -f oras_${ORAS_VERSION}_linux_amd64.tar.gz oras
+        rm -f oras_{{.ORAS_VERSION}}_linux_amd64.tar.gz oras
+        echo "✅ ORAS {{.ORAS_VERSION}} installed"
     status:
       - which oras
 
@@ -239,62 +246,12 @@ tasks:
   image:sign:
     desc: "Sign image digest with cosign (KMS > keyless > keypair)"
     cmds:
-      - |
-        # Resolve immutable digest — refuse to sign a mutable tag
-        DIGEST=$(docker inspect --format='{{`{{index .RepoDigests 0}}`}}' "{{.IMAGE}}" 2>/dev/null || true)
-        if [ -z "$DIGEST" ]; then
-          echo "Cannot resolve registry digest for {{.IMAGE}}"
-          echo "Make sure the image has been pushed (task push) before signing."
-          exit 1
-        fi
-        echo "Signing digest: ${DIGEST}"
-
-        KMS_KEY="{{.COSIGN_KMS_KEY}}"
-        if [ -n "$KMS_KEY" ]; then
-          echo "Mode: Azure Key Vault KMS"
-          cosign sign --yes --key "azurekms://$KMS_KEY" "$DIGEST"
-        elif [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
-          echo "Mode: GitHub Actions keyless"
-          cosign sign --yes "$DIGEST"
-        elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
-          echo "Mode: Azure DevOps keyless (fallback)"
-          cosign sign --yes "$DIGEST"
-        elif [ -f "{{.COSIGN_KEY}}" ]; then
-          echo "Mode: Keypair"
-          cosign sign --key "{{.COSIGN_KEY}}" --yes "$DIGEST"
-        else
-          echo "No signing method available."
-          echo "  Set COSIGN_KMS_KEY for Azure Key Vault KMS"
-          echo "  Or run in GitHub Actions / Azure DevOps for keyless"
-          echo "  Or run: task signing:init for local keypair"
-          exit 1
-        fi
-        echo "✅ Image signed ${DIGEST}"
+      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" ./scripts/image-sign.sh {{.IMAGE}} {{.COSIGN_KEY}}
 
   image:verify:
     desc: "Verify image signature (KMS > keypair > keyless)"
     cmds:
-      - |
-        # Resolve immutable digest if available
-        DIGEST=$(docker inspect --format='{{`{{index .RepoDigests 0}}`}}' "{{.IMAGE}}" 2>/dev/null || true)
-        TARGET="${DIGEST:-{{.IMAGE}}}"
-        echo "Verifying: ${TARGET}"
-
-        KMS_KEY="{{.COSIGN_KMS_KEY}}"
-        if [ -n "$KMS_KEY" ]; then
-          echo "Mode: Azure Key Vault KMS"
-          cosign verify --key "azurekms://$KMS_KEY" "$TARGET"
-        elif [ -f "{{.COSIGN_PUB}}" ]; then
-          echo "Mode: Keypair"
-          cosign verify --key "{{.COSIGN_PUB}}" "$TARGET"
-        else
-          echo "Mode: Keyless (GitHub OIDC)"
-          cosign verify \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp "github.com/cuspofaries/" \
-            "$TARGET"
-        fi
-        echo "✅ Image signature verified"
+      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" ./scripts/image-verify.sh {{.IMAGE}} {{.SCAN_DIR}} {{.COSIGN_PUB}}
 
   # ==========================================================================
   # SBOM SIGNING & ATTESTATION
@@ -312,61 +269,12 @@ tasks:
   sbom:attest:
     desc: "Attest image SBOM to image digest (strongest — requires registry)"
     cmds:
-      - |
-        # Resolve immutable digest — refuse to attest a mutable tag
-        DIGEST=$(docker inspect --format='{{`{{index .RepoDigests 0}}`}}' "{{.IMAGE}}" 2>/dev/null || true)
-        if [ -z "$DIGEST" ]; then
-          echo "Cannot resolve registry digest for {{.IMAGE}}"
-          echo "Make sure the image has been pushed (task push) before attesting."
-          exit 1
-        fi
-        echo "Attesting to digest: ${DIGEST}"
-        COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" ./scripts/sbom-attest.sh "$DIGEST" {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.COSIGN_KEY}}
+      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" ./scripts/sbom-attest.sh {{.IMAGE}} {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.COSIGN_KEY}}
 
   sbom:attest:verify:
     desc: "Verify signature and attestation are published in the registry"
     cmds:
-      - mkdir -p {{.SCAN_DIR}}
-      - |
-        # Resolve immutable digest if available
-        DIGEST=$(docker inspect --format='{{`{{index .RepoDigests 0}}`}}' "{{.IMAGE}}" 2>/dev/null || true)
-        TARGET="${DIGEST:-{{.IMAGE}}}"
-        echo "Verifying: ${TARGET}"
-
-        KMS_KEY="{{.COSIGN_KMS_KEY}}"
-        if [ -n "$KMS_KEY" ]; then
-          echo "── Verify signature (KMS) ──"
-          cosign verify --key "azurekms://$KMS_KEY" "$TARGET" 2>&1 | tee {{.SCAN_DIR}}/verify-signature.log
-          echo ""
-          echo "── Verify attestation (KMS) ──"
-          cosign verify-attestation \
-            --key "azurekms://$KMS_KEY" \
-            --type cyclonedx \
-            "$TARGET" > /dev/null 2>&1
-        elif [ -f "{{.COSIGN_PUB}}" ]; then
-          echo "── Verify signature (keypair) ──"
-          cosign verify --key "{{.COSIGN_PUB}}" "$TARGET" 2>&1 | tee {{.SCAN_DIR}}/verify-signature.log
-          echo ""
-          echo "── Verify attestation (keypair) ──"
-          cosign verify-attestation \
-            --key "{{.COSIGN_PUB}}" \
-            --type cyclonedx \
-            "$TARGET" > /dev/null 2>&1
-        else
-          echo "── Verify signature (keyless) ──"
-          cosign verify \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp "github.com/cuspofaries/" \
-            "$TARGET" 2>&1 | tee {{.SCAN_DIR}}/verify-signature.log
-          echo ""
-          echo "── Verify attestation (keyless) ──"
-          cosign verify-attestation \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp "github.com/cuspofaries/" \
-            --type cyclonedx \
-            "$TARGET" > /dev/null 2>&1
-        fi
-        echo "✅ Signature and attestation verified in registry"
+      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" ./scripts/image-verify.sh {{.IMAGE}} {{.SCAN_DIR}} {{.COSIGN_PUB}}
 
   sbom:sign:blob:
     desc: "Sign SBOM as standalone blob (fallback — no registry needed)"
@@ -392,11 +300,7 @@ tasks:
   sbom:upload:
     desc: "Upload attested SBOM to Dependency-Track (non-blocking monitoring)"
     cmds:
-      - |
-        # Use digest as project version when available (matches what was signed)
-        DIGEST=$(docker inspect --format='{{`{{index .RepoDigests 0}}`}}' "{{.IMAGE}}" 2>/dev/null || true)
-        VERSION="${DIGEST:-{{.IMAGE}}}"
-        ./scripts/sbom-upload-dtrack.sh {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.DTRACK_URL}} {{.DTRACK_API_KEY}} {{.DTRACK_PROJECT}} "$VERSION"
+      - ./scripts/sbom-upload-dtrack.sh {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.DTRACK_URL}} {{.DTRACK_API_KEY}} {{.DTRACK_PROJECT}} {{.IMAGE}}
 
   # ==========================================================================
   # SBOM VERIFICATION

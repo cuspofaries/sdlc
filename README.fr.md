@@ -215,9 +215,28 @@ Les politiques baseline (`policies/sbom-compliance.rego`) incluent :
 | **warn** | Packages deprecies/abandonnes | Devraient etre remplaces |
 | **warn** | Metadonnees fournisseur/editeur manquantes | Tracabilite reduite |
 
+### Versions d'outils pinnees
+
+Tous les outils sont pinnes a des versions specifiques dans `Taskfile.yml` (variables `TRIVY_VERSION`, `COSIGN_VERSION`, `OPA_VERSION`, `CDXGEN_VERSION`, `ORAS_VERSION`). Cela garantit :
+- **Reproductibilite** : memes versions en dev, CI, et dans tous les repos consommateurs
+- **Pas de rupture surprise** : une nouvelle version trivy/cosign ne peut pas silencieusement changer les resultats de scan ou le comportement de signature
+- **Auditabilite** : les versions exactes sont visibles dans la sortie de `task install:verify`
+
+Renovate surveille ces versions et ouvre des PRs quand des mises a jour sont disponibles, donc pinner ne signifie pas stagner.
+
 ### Pourquoi une installation resiliente des outils
 
 L'etape d'installation de Trivy utilise une **boucle de retry avec backoff** (3 tentatives, 5 secondes de delai entre les echecs). Cela protege contre les echecs reseau transitoires lors des telechargements `curl` dans les environnements CI, ou les runners partages peuvent connaitre des problemes de connectivite intermittents. Un seul echec de telechargement ne fait pas echouer tout le pipeline — seuls 3 echecs consecutifs le font.
+
+### Taskfile orchestre, scripts font le travail
+
+La logique metier (resolution de digest, detection du mode de signature, attestation, evaluation de politique) vit dans `scripts/*.sh` — jamais inline dans le YAML du Taskfile. Chaque script suit le meme contrat :
+- `set -euo pipefail` en haut
+- Entrees via arguments positionnels et variables d'environnement (pas de chemins en dur)
+- Logging explicite de chaque digest, fichier et mode avant d'agir
+- Exit 1 en cas d'echec (fail-closed)
+
+Le Taskfile ne fait qu'orchestrer : il appelle les scripts avec les bonnes variables. Cela empeche la duplication de logique et rend les scripts testables independamment du task runner.
 
 ### Coherence cross-plateforme
 

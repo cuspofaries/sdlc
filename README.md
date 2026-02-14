@@ -215,9 +215,28 @@ The baseline policies (`policies/sbom-compliance.rego`) include:
 | **warn** | Deprecated/abandoned packages | Should be replaced |
 | **warn** | Missing supplier/publisher metadata | Reduced traceability |
 
+### Pinned tool versions
+
+All tools are pinned to specific versions in `Taskfile.yml` (variables `TRIVY_VERSION`, `COSIGN_VERSION`, `OPA_VERSION`, `CDXGEN_VERSION`, `ORAS_VERSION`). This ensures:
+- **Reproducibility**: same versions across dev, CI, and all consumer repos
+- **No surprise breaking changes**: a new trivy/cosign release cannot silently change scan results or signing behavior
+- **Auditability**: the exact tool versions are visible in `task install:verify` output
+
+Renovate monitors these versions and opens PRs when updates are available, so pinning does not mean stale.
+
 ### Why resilient tool installation
 
 The Trivy installation step uses a **retry loop with backoff** (3 attempts, 5-second delay between failures). This guards against transient network failures during `curl` downloads in CI environments, where shared runners can experience intermittent connectivity issues. A single failed download does not fail the entire pipeline — only 3 consecutive failures do.
+
+### Taskfile orchestrates, scripts do the work
+
+Business logic (digest resolution, signing mode detection, attestation, policy evaluation) lives in `scripts/*.sh` — never inline in Taskfile YAML. Each script follows the same contract:
+- `set -euo pipefail` at the top
+- Inputs via positional args and env vars (no hardcoded paths)
+- Explicit logging of every digest, file, and mode before acting
+- Exit 1 on failure (fail-closed)
+
+The Taskfile only orchestrates: it calls scripts with the right variables. This prevents logic duplication and makes scripts testable independently of the task runner.
 
 ### Cross-platform consistency
 
