@@ -272,11 +272,13 @@ jobs:
       - name: Get image digest
         id: digest
         run: |
-          # Get digest from registry after push
+          # Resolve immutable digest from registry after push
+          # Never fall back to a mutable tag — all signing targets the digest.
           DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${{ steps.image-ref.outputs.image }}" 2>/dev/null || true)
           if [ -z "$DIGEST" ]; then
-            # Fallback: use tag reference
-            DIGEST="${{ steps.image-ref.outputs.image }}"
+            echo "FATAL: Cannot resolve registry digest for ${{ steps.image-ref.outputs.image }}"
+            echo "The image may not have been pushed successfully."
+            exit 1
           fi
           echo "image=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "Image digest: ${DIGEST}"

@@ -180,6 +180,63 @@ Dependency-Track est un outil de gouvernance et de monitoring, pas un gate CI. S
 
 Le stage DailyRescan (Azure DevOps) a besoin du SBOM original pour le rescanner avec les dernieres donnees CVE. Plutot que de se fier a un artifact pipeline (qui peut expirer, etre supprime ou devenir obsolete), le rescan extrait le SBOM depuis l'**attestation cosign** attachee au digest de l'image. C'est la source de verite cryptographique — l'attestation prouve que le SBOM n'a pas ete altere depuis le run original du pipeline. Si aucune attestation n'existe encore (premier run), le stage retombe sur l'artifact pipeline.
 
+### Pourquoi chaque operation cosign affiche le digest
+
+Chaque appel `cosign sign`, `cosign attest`, `cosign verify` et `cosign verify-attestation` est precede d'un `echo` explicite du digest cible. C'est une exigence de **piste d'audit** : en cas d'incident, les logs CI fournissent un enregistrement univoque du digest exact qui a ete signe, atteste et verifie. La sortie des verifications est archivee en fichiers `.log` (pas `.json` — cosign produit du texte, pas du JSON) dans `output/verify/` et uploadee comme artifacts avec 30 jours de retention. L'upload utilise `if: always()` / `condition: always()` pour que les resultats de scan et les donnees SBOM soient conserves **meme si le pipeline echoue** — essentiel pour l'analyse post-incident.
+
+### Pourquoi la transparence Rekor par defaut
+
+Toutes les operations de signature et d'attestation uploadent des entrees dans le [log de transparence Rekor](https://docs.sigstore.dev/logging/overview/) par defaut. Nous avons deliberement supprime `--no-upload=true` de tous les chemins de code (present dans les iterations initiales pour le mode keypair). Rekor fournit un log public, immutable et append-only de toutes les signatures — n'importe qui peut verifier independamment qu'une image specifique a ete signee a un moment donne par une identite donnee. Le flag `--no-upload` est documente comme option **uniquement** pour les environnements air-gap ou hors ligne.
+
+### Pourquoi la fusion baseline + politiques custom
+
+L'evaluation OPA charge les politiques depuis deux sources simultanement :
+
+1. **Politiques baseline** (`sdlc/policies/`) : Maintenues dans ce repo, appliquees a tous les repos consommateurs. Elles imposent des regles universelles (packages d'attaques supply chain connues, composants sans version).
+2. **Politiques custom** (`policies/` dans le repo consommateur) : Regles specifiques au projet (librairies bloquees, restrictions de licences, exigences specifiques a l'org).
+
+Les deux sont passees a `opa eval` via des flags `-d` et partagent le meme namespace `package sbom`. Les regles des deux sources sont automatiquement fusionnees — aucune configuration necessaire. Un repo consommateur peut ajouter des regles `deny` pour bloquer des packages supplementaires ou des regles `warn` pour des verifications consultatives sans modifier le baseline.
+
+### Pourquoi une installation resiliente des outils
+
+L'etape d'installation de Trivy utilise une **boucle de retry avec backoff** (3 tentatives, 5 secondes de delai entre les echecs). Cela protege contre les echecs reseau transitoires lors des telechargements `curl` dans les environnements CI, ou les runners partages peuvent connaitre des problemes de connectivite intermittents. Un seul echec de telechargement ne fait pas echouer tout le pipeline — seuls 3 echecs consecutifs le font.
+
+### Coherence cross-plateforme
+
+Le pipeline est implemente sur trois plateformes avec le **meme flux logique** :
+
+| Plateforme | Implementation | Notes |
+|------------|---------------|-------|
+| **GitHub Actions** | `.github/workflows/supply-chain-reusable.yml` | Job unique, workflow reutilisable `workflow_call` |
+| **Azure DevOps** | `azure-pipelines/pipeline.yml` | Multi-stage (BuildAndAnalyze → Publish → DailyRescan) |
+| **Local / tout CI** | `Taskfile.yml` + `scripts/` | Tasks portables, appelees par GH et ADO |
+
+Les trois partagent le meme ordre (build → analyse → gate → publication), les memes outils (Trivy, Cosign, OPA), la meme priorite de signature (KMS > keyless > keypair), et les memes invariants (integrite SBOM, signature sur digest uniquement, verification post-publication). Quand un mecanisme est ajoute a l'un, il est ajoute aux trois.
+
+### Output du workflow pour la consommation downstream
+
+Le workflow reutilisable GitHub Actions expose un output `image` contenant la **reference complete de l'image avec digest** (`registry/owner/name@sha256:...`). Les jobs en aval peuvent utiliser cet output pour deployer, scanner ou referencer l'image exacte qui a ete construite, signee et attestee — sans avoir besoin de resoudre le digest eux-memes.
+
+---
+
+## Garanties de securite
+
+Ce pipeline fournit les garanties verifiables suivantes :
+
+| Garantie | Mecanisme | Mode d'echec |
+|----------|-----------|-------------|
+| **Rien n'est publie sans scan** | Shift-left : build → analyse → GATE → publication | Le pipeline s'arrete au gate |
+| **Le SBOM decrit l'image exacte** | Verification croisee ImageID (etape 5) | `FATAL: Image ID mismatch` |
+| **Le SBOM n'a pas ete modifie apres le scan** | SHA256 enregistre a la generation, verifie avant attestation (etape 12) | `FATAL: SBOM was modified` |
+| **Meme binaire entre les stages** (ADO) | `docker save` → artifact → `docker load` + verification ImageID | `Loaded image does not match SBOM` |
+| **Les signatures ciblent des digests immutables** | RepoDigest resolu apres push, fallback sur tag refuse | `Cannot resolve registry digest` |
+| **Les signatures sont effectivement dans le registry** | Post-publication `cosign verify` + `cosign verify-attestation` (etape 15) | Le pipeline s'arrete avant de declarer le succes |
+| **Seul le pipeline de ce projet peut passer la verif** | `--certificate-identity-regexp` scope a l'org/projet | Signatures d'autres pipelines rejetees |
+| **Le contenu SBOM est lie cryptographiquement a l'image** | Attestation In-Toto via `cosign attest --type cyclonedx` | Falsification de l'attestation detectable |
+| **Toutes les signatures sont publiquement auditables** | Log de transparence Rekor (pas de `--no-upload`) | Verification independante possible |
+| **Les packages dangereux connus sont bloques** | Regles OPA `deny` (baseline + custom) | `POLICY CHECK FAILED` |
+| **Un echec DTrack ne bloque pas la livraison** | `continue-on-error: true`, lie au digest | L'image signee est livree quoi qu'il arrive |
+
 ---
 
 ## Démarrage rapide — repo consommateur
@@ -299,6 +356,8 @@ task pipeline \
 | `sbom:attest:verify` | Verifier que la signature et l'attestation sont publiees dans le registry |
 | `sbom:sign:blob` | Signer le SBOM comme fichier standalone |
 | `sbom:verify` | Vérifier la signature et l'intégrité du SBOM |
+| `sbom:store` | Stocker le SBOM comme artefact OCI dans le registry (ORAS) |
+| `sbom:fetch` | Recuperer le SBOM depuis le registry OCI (ORAS) |
 | `sbom:upload` | Uploader le SBOM vers Dependency-Track |
 | `sbom:tamper:test` | Démo de détection de falsification SBOM |
 | `pipeline` | Pipeline complet (build → analyse → publication) |
