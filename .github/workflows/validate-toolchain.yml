@@ -275,7 +275,7 @@ jobs:
           fi
 
           # Now run the real policy (without exceptions, since expired would block)
-          task sbom:policy
+          task sbom:policy EXCEPTIONS_FILE=""
 
       - name: "Assert: SBOM integrity (SHA256 unchanged after scan + policy)"
         run: ./scripts/sbom-integrity.sh verify output/sbom/image/sbom-image-trivy.json localhost:5000/sdlc-e2e-test:test
