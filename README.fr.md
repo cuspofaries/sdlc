@@ -117,6 +117,71 @@ Trois repos distincts (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formaient
 
 ---
 
+## Decisions de conception
+
+Cette section explique **pourquoi** le pipeline fonctionne ainsi. Chaque mecanisme existe pour une raison precise — comprendre la logique aide a faire des choix eclaires lors de la personnalisation ou de l'extension du pipeline.
+
+### Pourquoi scanner avant le push (shift-left)
+
+L'ancien pipeline (`poc-build-sign` + `poc-sbom`) poussait l'image d'abord, puis generait le SBOM et le scannait. Cela creait une fenetre ou une image vulnerable ou non conforme etait deja dans le registry. Le shift-left signifie que l'image est analysee **localement** avant toute publication — si elle echoue, rien ne quitte le runner.
+
+### Pourquoi le double scan (trivy image + trivy sbom)
+
+Deux scans distincts servent deux objectifs differents :
+
+- **`trivy image`** (etape 6) est le **gate de securite**. Il scanne l'image directement, accedant aux metadonnees du systeme de fichiers, aux bases de donnees des packages OS et a l'analyse binaire. C'est l'evaluation de vulnerabilites la plus complete et fiable car Trivy voit tout ce que le runtime conteneur verrait. Cette etape est **bloquante** (`--exit-code 1`).
+
+- **`trivy sbom`** (etape 7) est le **scan de gouvernance**. Il scanne le fichier SBOM qui sera atteste et publie. Cela prouve que le SBOM qu'on signe a ete verifie — « ce qu'on signe = ce qu'on a scanne ». Tout delta entre les etapes 6 et 7 revele des lacunes dans l'inventaire du SBOM (packages que Trivy voit dans l'image mais absents du SBOM). Cette etape est **non bloquante** (`--exit-code 0`) car le scan base sur SBOM peut produire des faux positifs ou manquer des packages que le scan direct detecte.
+
+### Pourquoi signer le digest, pas le tag
+
+Les tags sont mutables — `myimage:v1.0` peut etre ecrase a tout moment. Les digests (`sha256:abc123...`) sont des references immutables adressees par contenu. Signer un tag ne garantit rien car le tag peut etre redirige vers une autre image apres la signature. Le pipeline resout le **RepoDigest** apres le push et toutes les operations de signature/attestation ciblent ce digest. Sur Azure DevOps, si `docker inspect` ne peut pas resoudre le digest (problemes de timing avec certains registries), on utilise `az acr repository show` en fallback et on **refuse de signer** si aucun digest n'est resolu — on ne retombe jamais sur un tag mutable.
+
+### L'invariant d'integrite du SBOM
+
+> **Invariant** : Le SBOM est genere, scanne, evalue et atteste a partir de **la meme image exacte**. Ne jamais regenerer ni modifier le SBOM entre la generation et l'attestation.
+
+Cet invariant est applique par trois mecanismes :
+
+1. **Verification croisee ImageID** (etape 5) : L'identifiant de l'image embarque dans le SBOM (`aquasecurity:trivy:ImageID`) est compare avec `docker inspect` de l'image reellement construite. S'ils different, le pipeline s'arrete.
+
+2. **Hash SHA256** (etape 12) : Le SHA256 du fichier SBOM est enregistre a la generation (etape 4) et re-verifie juste avant l'attestation. Si le fichier a ete modifie (meme un seul octet), le pipeline s'arrete.
+
+3. **Pas de rebuild entre les stages** (Azure DevOps) : Comme Azure DevOps utilise des stages separes pour BuildAndAnalyze et Publish, l'image est transferee via `docker save` → artifact → `docker load` pour garantir l'identite binaire. L'ImageID de l'image chargee est explicitement verifie contre la valeur attendue.
+
+### Pourquoi KMS plutot que keyless (contexte entreprise)
+
+La strategie de signature suit un ordre de priorite : **KMS > keyless > keypair**.
+
+- **Azure Key Vault KMS** (`azurekms://`) : Recommande pour l'entreprise. La cle privee ne quitte jamais le HSM, la signature est auditee dans Azure, et la cle peut etre rotee sans modifier le pipeline. Necessite une service connection Azure avec les permissions `sign`, `verify`, `get` sur la cle.
+
+- **Keyless** (OIDC via Sigstore) : Approche zero gestion de cle. Le runner CI obtient un certificat ephemere de Fulcio base sur son identite OIDC. Les signatures sont enregistrees dans le log de transparence Rekor. Ideal pour l'open source, mais necessite l'infrastructure publique Sigstore.
+
+- **Keypair** : Fichiers `.pem` locaux. Le plus simple mais le plus difficile a gerer (rotation, stockage securise). Reserve au developpement ou aux environnements air-gap.
+
+### Pourquoi restreindre `--certificate-identity-regexp`
+
+En mode keyless, `cosign verify` utilise `--certificate-identity-regexp` pour filtrer quelles identites OIDC sont acceptees. Une valeur permissive comme `".*"` accepterait les signatures de **n'importe quel** pipeline sur **n'importe quelle** organisation — annulant la garantie de la verification. Le regexp doit etre aussi specifique que possible :
+
+- **GitHub Actions** : `"github.com/cuspofaries/"` — scope a l'organisation. Le subject OIDC de GitHub inclut le nom du repo, donc le scope au niveau org est deja assez restrictif.
+- **Azure DevOps** : `"https://dev.azure.com/cuspofaries/sdlc/_build"` — scope org + projet + definitions de pipeline. Scoper uniquement a l'org (`cuspofaries/`) permettrait a **n'importe quel pipeline de n'importe quel projet** de cette org de passer la verification. Ajouter le nom du projet (`sdlc/`) et `_build` garantit que seuls les pipelines de ce projet specifique sont acceptes.
+
+Lors du portage vers votre organisation, c'est la **premiere chose a changer**. Voir [docs/azure-devops-porting.md](docs/azure-devops-porting.md) pour la liste complete.
+
+### Pourquoi la verification post-attestation (etape 15)
+
+La signature et l'attestation peuvent echouer silencieusement — un flag `--no-upload`, un probleme reseau, ou un souci de persistance du registry peuvent aboutir a un pipeline qui declare le succes alors que la signature n'a jamais atteint le registry. L'etape 15 execute `cosign verify` et `cosign verify-attestation` contre le registry pour **prouver** que les artefacts sont recuperables. Cette etape est **bloquante** : si la verification echoue, le pipeline s'arrete avant de declarer le succes. La sortie complete est archivee dans `output/verify/` pour la piste d'audit.
+
+### Pourquoi Dependency-Track est non bloquant
+
+Dependency-Track est un outil de gouvernance et de monitoring, pas un gate CI. Si DTrack est down, injoignable ou mal configure, l'image signee et attestee doit quand meme etre livree — les garanties de securite viennent des gates du pipeline (scan + politique + signature), pas de DTrack. Le SBOM est lie au **digest registry** (pas au SHA git) pour que l'inventaire DTrack corresponde directement a l'artefact publie.
+
+### Pourquoi le DailyRescan utilise l'attestation cosign
+
+Le stage DailyRescan (Azure DevOps) a besoin du SBOM original pour le rescanner avec les dernieres donnees CVE. Plutot que de se fier a un artifact pipeline (qui peut expirer, etre supprime ou devenir obsolete), le rescan extrait le SBOM depuis l'**attestation cosign** attachee au digest de l'image. C'est la source de verite cryptographique — l'attestation prouve que le SBOM n'a pas ete altere depuis le run original du pipeline. Si aucune attestation n'existe encore (premier run), le stage retombe sur l'artifact pipeline.
+
+---
+
 ## Démarrage rapide — repo consommateur
 
 Tout repo avec un Dockerfile peut consommer ce pipeline avec un seul fichier workflow :
@@ -257,11 +322,28 @@ task sbom:upload      # Uploader le SBOM
 
 ## Azure DevOps
 
-Un template Azure Pipelines est disponible dans `azure-pipelines/pipeline.yml` avec :
+Un template Azure Pipelines est disponible dans `azure-pipelines/pipeline.yml` implementant le meme pipeline avec des adaptations specifiques a Azure.
 
-- Stage **BuildAndAnalyze** : build + SBOM + scan + policy (rien n'est publié)
-- Stage **Publish** : push + sign + attest (uniquement si BuildAndAnalyze réussit)
-- Stage **DailyRescan** : rescan planifié avec les dernières données CVE
+### Stages
+
+| Stage | Declencheur | Description |
+|-------|-------------|-------------|
+| **BuildAndAnalyze** | Chaque run CI | Build + generation SBOM + scan vulnerabilites + evaluation politique. Rien n'est pousse. L'image est sauvee en artifact via `docker save` pour le stage suivant. |
+| **Publish** | Seulement si BuildAndAnalyze reussit | `docker load` depuis l'artifact (pas de rebuild), push, sign, attest, verification dans le registry, upload vers DTrack. |
+| **DailyRescan** | Planifie (cron) | Extrait le SBOM depuis l'attestation cosign (source de verite), rescanne avec les dernieres donnees CVE, uploade les resultats frais vers DTrack. |
+
+### Mecanismes specifiques a Azure
+
+- **Transfert d'image entre stages** : `docker save` dans BuildAndAnalyze → artifact pipeline → `docker load` dans Publish. Pas de rebuild, identite binaire garantie.
+- **Resolution du digest** : `docker inspect` avec `az acr repository show` en fallback. Refuse de signer si aucun digest immutable n'est resolu.
+- **Signature** : Azure Key Vault KMS (`azurekms://`) en methode principale, keyless (OIDC via `vstoken.dev.azure.com`) en fallback.
+- **Identite keyless** : `--certificate-identity-regexp` scope a `"https://dev.azure.com/cuspofaries/sdlc/_build"` (scope org + projet + pipeline).
+- **Integrite du SBOM entre stages** : SHA256 + ImageID enregistres comme fichiers dans l'artifact, verifies apres `docker load` dans le stage Publish.
+- **Source SBOM du DailyRescan** : Extrait depuis l'attestation cosign (`cosign verify-attestation | jq`), retombe sur l'artifact pipeline.
+
+### Guide de portage
+
+Voir [docs/azure-devops-porting.md](docs/azure-devops-porting.md) pour une checklist complete des fichiers et lignes a modifier lors du deploiement de ce pipeline dans votre propre organisation Azure DevOps (identity-regexp, service connections, variable group, configuration KMS, etc.).
 
 ---
 
@@ -285,6 +367,7 @@ sdlc/
 ├── policies/
 │   └── sbom-compliance.rego          ← Politiques OPA baseline
 ├── docs/
+│   ├── azure-devops-porting.md       ← Checklist de portage Azure DevOps
 │   ├── dependency-track.md
 │   └── dependency-track.fr.md
 ├── docker-compose.dtrack.yml

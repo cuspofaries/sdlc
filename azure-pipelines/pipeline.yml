@@ -316,13 +316,13 @@ stages:
                 echo "Verifying signature (KMS)..."
                 cosign verify \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-signature.json
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-signature.log
               else
                 echo "Verifying signature (keyless)..."
                 cosign verify \
                   --certificate-oidc-issuer https://vstoken.dev.azure.com \
-                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/" \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-signature.json
+                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/sdlc/_build" \
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-signature.log
               fi
               echo "Signature verified in registry"
             displayName: 'Verify Signature in Registry'
@@ -338,14 +338,14 @@ stages:
                 cosign verify-attestation \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   --type cyclonedx \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation.json
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation.log
               else
                 echo "Verifying attestation (keyless)..."
                 cosign verify-attestation \
                   --certificate-oidc-issuer https://vstoken.dev.azure.com \
-                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/" \
+                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/sdlc/_build" \
                   --type cyclonedx \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation.json
+                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation.log
               fi
               echo "SBOM attestation verified in registry"
             displayName: 'Verify Attestation in Registry'
@@ -469,7 +469,7 @@ stages:
               else
                 cosign verify-attestation \
                   --certificate-oidc-issuer https://vstoken.dev.azure.com \
-                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/" \
+                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/sdlc/_build" \
                   --type cyclonedx \
                   "$(RESCAN_IMAGE)" 2>/dev/null \
                   | jq -r '.payload' | base64 -d \

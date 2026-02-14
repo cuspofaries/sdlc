@@ -117,6 +117,71 @@ Three separate repos (`poc-build-sign`, `poc-sbom`, `poc-sbom-build`) formed a s
 
 ---
 
+## Design decisions
+
+This section explains **why** the pipeline works the way it does. Each mechanism exists for a specific reason — understanding the rationale helps you make informed decisions when customizing or extending the pipeline.
+
+### Why scan before push (shift-left)
+
+The previous pipeline (`poc-build-sign` + `poc-sbom`) pushed the image first, then generated the SBOM and scanned it. This created a window where a vulnerable or non-compliant image was already in the registry. Shift-left means the image is analyzed **locally** before any publish — if it fails, nothing leaves the runner.
+
+### Why dual scan (trivy image + trivy sbom)
+
+Two separate scans serve two different purposes:
+
+- **`trivy image`** (step 6) is the **security gate**. It scans the image directly, accessing filesystem metadata, OS package databases, and binary analysis. This is the most complete and reliable vulnerability assessment because Trivy sees everything the container runtime would see. This step is **blocking** (`--exit-code 1`).
+
+- **`trivy sbom`** (step 7) is the **governance scan**. It scans the SBOM file that will be attested and published. This proves that the SBOM we sign has been verified — "what we sign = what we scanned". Any delta between step 6 and step 7 reveals gaps in the SBOM inventory (packages that Trivy sees in the image but are missing from the SBOM). This step is **non-blocking** (`--exit-code 0`) because SBOM-based scanning can produce false positives or miss packages that direct image scanning catches.
+
+### Why sign on digest, not tag
+
+Tags are mutable — `myimage:v1.0` can be overwritten at any time. Digests (`sha256:abc123...`) are immutable content-addressed references. Signing a tag provides no guarantee because the tag can be repointed to a different image after signing. The pipeline resolves the **RepoDigest** after push and all signing/attestation targets this digest. On Azure DevOps, if `docker inspect` cannot resolve the digest (timing issues with some registries), we fall back to `az acr repository show` and **refuse to sign** if no digest can be resolved — we never fall back to a mutable tag.
+
+### The SBOM integrity invariant
+
+> **Invariant**: The SBOM is generated, scanned, evaluated, and attested from the **exact same image**. Never regenerate or modify the SBOM between generation and attestation.
+
+This is enforced by three mechanisms:
+
+1. **ImageID cross-check** (step 5): The image ID embedded in the SBOM (`aquasecurity:trivy:ImageID`) is compared with `docker inspect` of the actual built image. If they differ, the pipeline stops.
+
+2. **SHA256 hash** (step 12): The SHA256 of the SBOM file is recorded at generation (step 4) and re-verified just before attestation. If the file was modified (even a single byte), the pipeline stops.
+
+3. **No rebuild between stages** (Azure DevOps): Since Azure DevOps uses separate stages for BuildAndAnalyze and Publish, the image is transferred via `docker save` → artifact → `docker load` to guarantee binary identity. The loaded image's ID is explicitly verified against the expected value.
+
+### Why KMS over keyless (enterprise context)
+
+The signing strategy follows a priority order: **KMS > keyless > keypair**.
+
+- **Azure Key Vault KMS** (`azurekms://`): Recommended for enterprise. The private key never leaves the HSM, signing is audited in Azure, and the key can be rotated without changing the pipeline. Requires an Azure service connection with `sign`, `verify`, `get` permissions on the key.
+
+- **Keyless** (OIDC via Sigstore): Zero-key-management approach. The CI runner gets an ephemeral certificate from Fulcio based on its OIDC identity. Signatures are recorded in the Rekor transparency log. Great for open source, but requires public Sigstore infrastructure and trusting the Rekor log.
+
+- **Keypair**: Local `.pem` files. Simplest but hardest to manage (key rotation, secure storage). Reserved for development or air-gapped environments.
+
+### Why restrict `--certificate-identity-regexp`
+
+In keyless mode, `cosign verify` uses `--certificate-identity-regexp` to filter which OIDC identities are accepted. A permissive value like `".*"` would accept signatures from **any** pipeline on **any** organization — defeating the purpose of verification. The regexp should be as specific as possible:
+
+- **GitHub Actions**: `"github.com/cuspofaries/"` — scoped to the organization. GitHub's OIDC subject includes the repo name, so org-level scoping is already quite restrictive.
+- **Azure DevOps**: `"https://dev.azure.com/cuspofaries/sdlc/_build"` — scoped to org + project + pipeline definitions. Scoping only to the org (`cuspofaries/`) would allow **any pipeline in any project** of that org to pass verification. Adding the project name (`sdlc/`) and `_build` ensures only pipelines from this specific project are accepted.
+
+When porting to your organization, this is the **first thing to change**. See [docs/azure-devops-porting.md](docs/azure-devops-porting.md) for the full list.
+
+### Why post-attestation verification (step 15)
+
+Signing and attesting can silently fail — a `--no-upload` flag, a network glitch, or a registry persistence issue can result in a pipeline that declares success while the signature never made it to the registry. Step 15 runs `cosign verify` and `cosign verify-attestation` against the registry to **prove** the artifacts are retrievable. This step is **blocking**: if verification fails, the pipeline stops before declaring success. Full output is archived in `output/verify/` for audit trail.
+
+### Why Dependency-Track is non-blocking
+
+Dependency-Track is a governance and monitoring tool, not a CI gate. If DTrack is down, unreachable, or misconfigured, the signed and attested image should still ship — the security guarantees come from the pipeline gates (scan + policy + signature), not from DTrack. The SBOM is linked to the **registry digest** (not the git SHA) so that DTrack's inventory maps directly to the published artifact.
+
+### Why DailyRescan uses cosign attestation
+
+The DailyRescan stage (Azure DevOps) needs the original SBOM to rescan it with the latest CVE data. Rather than relying on a pipeline artifact (which can expire, be deleted, or become stale), the rescan extracts the SBOM from the **cosign attestation** attached to the image digest. This is the cryptographic source of truth — the attestation proves the SBOM has not been tampered with since the original pipeline run. If no attestation exists yet (first run), the stage falls back to the pipeline artifact.
+
+---
+
 ## Quick start — consumer repo
 
 Any repo with a Dockerfile can consume this pipeline with a single workflow file:
@@ -257,11 +322,28 @@ task sbom:upload      # Upload SBOM
 
 ## Azure DevOps
 
-An Azure Pipelines template is available at `azure-pipelines/pipeline.yml` with:
+An Azure Pipelines template is available at `azure-pipelines/pipeline.yml` implementing the same pipeline with Azure-specific adaptations.
 
-- **BuildAndAnalyze** stage: build + SBOM + scan + policy (nothing pushed)
-- **Publish** stage: push + sign + attest (only if BuildAndAnalyze succeeds)
-- **DailyRescan** stage: scheduled rescan with latest CVE data
+### Stages
+
+| Stage | Trigger | Description |
+|-------|---------|-------------|
+| **BuildAndAnalyze** | Every CI run | Build + SBOM generation + vulnerability scan + policy evaluation. Nothing is pushed. Image is saved as artifact via `docker save` for the next stage. |
+| **Publish** | Only if BuildAndAnalyze succeeds | `docker load` from artifact (no rebuild), push, sign, attest, verify in registry, upload to DTrack. |
+| **DailyRescan** | Scheduled (cron) | Extracts SBOM from cosign attestation (source of truth), rescans with latest CVE data, uploads fresh results to DTrack. |
+
+### Azure-specific mechanisms
+
+- **Image transfer between stages**: `docker save` in BuildAndAnalyze → pipeline artifact → `docker load` in Publish. No rebuild, guaranteed binary identity.
+- **Digest resolution**: `docker inspect` with `az acr repository show` as fallback. Refuses to sign if no immutable digest is resolved.
+- **Signing**: Azure Key Vault KMS (`azurekms://`) as primary, keyless (OIDC via `vstoken.dev.azure.com`) as fallback.
+- **Keyless identity**: `--certificate-identity-regexp` scoped to `"https://dev.azure.com/cuspofaries/sdlc/_build"` (org + project + pipeline scope).
+- **SBOM integrity across stages**: SHA256 + ImageID recorded as files in artifact, verified after `docker load` in Publish stage.
+- **DailyRescan SBOM source**: Extracted from cosign attestation (`cosign verify-attestation | jq`), falls back to pipeline artifact.
+
+### Porting guide
+
+See [docs/azure-devops-porting.md](docs/azure-devops-porting.md) for a complete checklist of files and lines to modify when deploying this pipeline in your own Azure DevOps organization (identity-regexp, service connections, variable group, KMS setup, etc.).
 
 ---
 
@@ -285,6 +367,7 @@ sdlc/
 ├── policies/
 │   └── sbom-compliance.rego          ← Baseline OPA policies
 ├── docs/
+│   ├── azure-devops-porting.md       ← Porting checklist for Azure DevOps
 │   ├── dependency-track.md
 │   └── dependency-track.fr.md
 ├── docker-compose.dtrack.yml

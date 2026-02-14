@@ -320,7 +320,7 @@ jobs:
           cosign verify \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
-            "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-signature.json
+            "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-signature.log
           echo "Signature verified in registry"
 
       - name: Verify attestation in registry
@@ -329,7 +329,7 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity-regexp "github.com/cuspofaries/" \
             --type cyclonedx \
-            "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-attestation.json
+            "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-attestation.log
           echo "SBOM attestation verified in registry"
 
       # Upload the attested SBOM to Dependency-Track for continuous monitoring.
