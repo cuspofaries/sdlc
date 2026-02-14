@@ -28,10 +28,6 @@ vars:
   IMAGE_TAG: '{{.IMAGE_TAG | default "latest"}}'
   IMAGE: '{{.REGISTRY}}/{{.IMAGE_NAME}}:{{.IMAGE_TAG}}'
 
-  # -- Build --
-  CONTEXT: '{{.CONTEXT | default "./app"}}'
-  DOCKERFILE: '{{.DOCKERFILE | default "Dockerfile"}}'
-
   # -- SBOM --
   SBOM_FORMAT: cyclonedx-json
   SBOM_DIR: ./output/sbom
@@ -155,7 +151,7 @@ tasks:
   build:
     desc: "Build container image (local only, no push)"
     cmds:
-      - docker build -t {{.IMAGE}} -f {{.CONTEXT}}/{{.DOCKERFILE}} {{.CONTEXT}}
+      - docker build -t {{.IMAGE}} ./app
       - echo "Image built: {{.IMAGE}}"
 
   # ==========================================================================
@@ -176,7 +172,7 @@ tasks:
     desc: "Generate source SBOM (declared deps)"
     cmds:
       - mkdir -p {{.SBOM_DIR}}/source
-      - ./scripts/sbom-generate-source.sh {{.CONTEXT}} {{.SBOM_DIR}}/source
+      - ./scripts/sbom-generate-source.sh ./app {{.SBOM_DIR}}/source
       - echo "Source SBOMs generated -> {{.SBOM_DIR}}/source/"
 
   sbom:generate:all:
