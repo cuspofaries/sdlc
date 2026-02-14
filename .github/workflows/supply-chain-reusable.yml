@@ -311,14 +311,18 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "1"
 
-      - name: Push SBOM to Dependency-Track
+      # Upload the attested SBOM to Dependency-Track for continuous monitoring.
+      # Non-blocking: DTrack is governance/monitoring, not a CI gate.
+      # Uses the registry digest as version to link SBOM to the published image.
+      - name: Upload attested SBOM to Dependency-Track
         if: ${{ inputs.dtrack-hostname != '' }}
+        continue-on-error: true
         uses: DependencyTrack/gh-upload-sbom@v3
         with:
           serverHostname: ${{ inputs.dtrack-hostname }}
           apiKey: ${{ secrets.DTRACK_API_KEY }}
           projectName: ${{ inputs.image-name }}
-          projectVersion: ${{ github.sha }}
+          projectVersion: ${{ steps.digest.outputs.image }}
           bomFilename: output/sbom/image/sbom-image-trivy.json
           autoCreate: true
 

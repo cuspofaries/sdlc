@@ -308,9 +308,9 @@ tasks:
       - ./scripts/sbom-sign.sh {{.IMAGE}} {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.COSIGN_KEY}}
 
   sbom:upload:
-    desc: "Upload SBOM to Dependency-Track"
+    desc: "Upload attested SBOM to Dependency-Track (non-blocking monitoring)"
     cmds:
-      - ./scripts/sbom-upload-dtrack.sh {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.DTRACK_URL}} {{.DTRACK_API_KEY}} {{.DTRACK_PROJECT}}
+      - ./scripts/sbom-upload-dtrack.sh {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.DTRACK_URL}} {{.DTRACK_API_KEY}} {{.DTRACK_PROJECT}} {{.IMAGE}}
 
   # ==========================================================================
   # SBOM VERIFICATION

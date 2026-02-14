@@ -282,17 +282,20 @@ stages:
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
 
-          # Upload to Dependency-Track
+          # Upload the attested SBOM to Dependency-Track for continuous monitoring.
+          # Non-blocking: DTrack is governance/monitoring, not a CI gate.
+          # Uses the registry digest as project version.
           - script: |
               if [ -n "$(DTRACK_API_KEY)" ]; then
                 task sbom:upload \
                   DTRACK_URL=$(DTRACK_URL) \
                   DTRACK_API_KEY=$(DTRACK_API_KEY) \
-                  DTRACK_PROJECT=$(IMAGE_NAME)
+                  DTRACK_PROJECT="$(IMAGE_NAME):$(IMAGE_DIGEST)"
               else
                 echo "DTRACK_API_KEY not set, skipping upload"
               fi
-            displayName: 'Upload SBOM to Dependency-Track'
+            displayName: 'Upload Attested SBOM to Dependency-Track'
+            continueOnError: true
 
   # ===========================================================================
   # Daily Rescan (scheduled)
