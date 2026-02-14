@@ -195,7 +195,10 @@ stages:
           # Load the exact same image that was scanned (no rebuild)
           - script: |
               docker load -i output/image/image.tar
-              echo "Image loaded: $(docker images --format '{{.Repository}}:{{.Tag}}' | head -1)"
+              IMAGE="$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
+              IMAGE_ID=$(docker inspect --format='{{.Id}}' "$IMAGE")
+              echo "Image loaded: $IMAGE"
+              echo "ImageID:      $IMAGE_ID"
             displayName: 'Load Scanned Image'
 
           # Verify SBOM integrity (must be untouched since BuildAndAnalyze)
