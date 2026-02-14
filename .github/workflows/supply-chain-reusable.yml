@@ -116,6 +116,11 @@ jobs:
       # =====================================================================
       # PHASE 2 — ANALYZE (on the local image, before any push)
       # =====================================================================
+      # INVARIANT: The SBOM is generated, scanned, evaluated, and attested
+      # from the EXACT SAME image. Never regenerate or modify the SBOM
+      # between generation and attestation — this would break the guarantee
+      # that "what we scanned = what we signed".
+      # =====================================================================
 
       - name: Install Trivy
         run: |
@@ -259,6 +264,8 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "1"
 
+      # Attest the SAME SBOM that was generated and scanned in Phase 2.
+      # Never regenerate — this file must be untouched since step 4.
       - name: Attest SBOM to image digest
         run: |
           cosign attest --yes \

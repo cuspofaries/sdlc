@@ -157,6 +157,10 @@ tasks:
   # ==========================================================================
   # PHASE 2 - ANALYZE
   # ==========================================================================
+  # INVARIANT: The SBOM is generated, scanned, evaluated, and attested
+  # from the EXACT SAME image. Never regenerate or modify the SBOM
+  # between generation and attestation — this would break the guarantee
+  # that "what we scanned = what we signed".
 
   sbom:generate:
     desc: "Generate image SBOM (CycloneDX) via trivy image"

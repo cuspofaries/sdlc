@@ -76,6 +76,10 @@ stages:
             displayName: 'Build Image (local, no push)'
 
           # PHASE 2 — Analyze
+          # INVARIANT: The SBOM is generated, scanned, evaluated, and attested
+          # from the EXACT SAME image. The image.tar artifact guarantees binary
+          # identity across stages. Never regenerate or modify the SBOM between
+          # generation (here) and attestation (Publish stage).
           - script: task sbom:generate IMAGE_TAG=$(IMAGE_TAG)
             displayName: 'Generate Image SBOM'
 
@@ -202,7 +206,8 @@ stages:
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
 
-          # Attest SBOM — Key Vault KMS (preferred) or keyless (fallback)
+          # Attest the SAME SBOM from BuildAndAnalyze stage (via artifact).
+          # Never regenerate — this file must be untouched since Phase 2.
           - script: |
               if [ -n "$(COSIGN_KV_KEY)" ]; then
                 echo "Attesting with Azure Key Vault KMS"
