@@ -14,6 +14,12 @@
 #   - Azure Key Vault with a cosign key (or OIDC for keyless)
 # =============================================================================
 
+parameters:
+  - name: airgap
+    displayName: 'Generate air-gap deployment package'
+    type: boolean
+    default: false
+
 trigger:
   branches:
     include:
@@ -236,20 +242,30 @@ stages:
               echo "Registry digest: $DIGEST"
             displayName: 'Get Registry Digest'
 
+          - script: mkdir -p output/airgap
+            displayName: 'Prepare Air-Gap Bundle Directory'
+            condition: and(succeeded(), eq('${{ parameters.airgap }}', 'true'))
+
           # Sign image — Key Vault KMS (preferred) or keyless (fallback)
           - script: |
+              BUNDLE_FLAG=""
+              if [ "$AIRGAP" = "True" ]; then
+                BUNDLE_FLAG="--bundle output/airgap/image-signature.bundle"
+              fi
               echo "Signing digest: $(IMAGE_DIGEST)"
               if [ -n "$(COSIGN_KV_KEY)" ]; then
                 echo "Mode: Azure Key Vault KMS"
                 cosign sign --yes \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
+                  $BUNDLE_FLAG \
                   "$(IMAGE_DIGEST)"
               else
                 echo "Mode: keyless (OIDC)"
-                cosign sign --yes "$(IMAGE_DIGEST)"
+                cosign sign --yes $BUNDLE_FLAG "$(IMAGE_DIGEST)"
               fi
             displayName: 'Sign Image Digest'
             env:
+              AIRGAP: ${{ parameters.airgap }}
               AZURE_TENANT_ID: $(AZURE_TENANT_ID)
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
@@ -257,6 +273,10 @@ stages:
           # Attest the SAME SBOM from BuildAndAnalyze stage (via artifact).
           # Never regenerate — this file must be untouched since Phase 2.
           - script: |
+              BUNDLE_FLAG=""
+              if [ "$AIRGAP" = "True" ]; then
+                BUNDLE_FLAG="--bundle output/airgap/sbom-attestation.bundle"
+              fi
               echo "Attesting SBOM to digest: $(IMAGE_DIGEST)"
               if [ -n "$(COSIGN_KV_KEY)" ]; then
                 echo "Mode: Azure Key Vault KMS"
@@ -264,16 +284,19 @@ stages:
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   --predicate output/sbom/image/sbom-image-trivy.json \
                   --type cyclonedx \
+                  $BUNDLE_FLAG \
                   "$(IMAGE_DIGEST)"
               else
                 echo "Mode: keyless (OIDC)"
                 cosign attest --yes \
                   --predicate output/sbom/image/sbom-image-trivy.json \
                   --type cyclonedx \
+                  $BUNDLE_FLAG \
                   "$(IMAGE_DIGEST)"
               fi
             displayName: 'Attest SBOM to Image Digest'
             env:
+              AIRGAP: ${{ parameters.airgap }}
               AZURE_TENANT_ID: $(AZURE_TENANT_ID)
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
@@ -309,21 +332,28 @@ stages:
                 ]
               }
               PRED
+              BUNDLE_FLAG=""
+              if [ "$AIRGAP" = "True" ]; then
+                BUNDLE_FLAG="--bundle output/airgap/slsa-attestation.bundle"
+              fi
               if [ -n "$(COSIGN_KV_KEY)" ]; then
                 cosign attest --yes \
                   --key "azurekms://$(COSIGN_KV_KEY)" \
                   --predicate "$PROVENANCE" \
                   --type slsaprovenance \
+                  $BUNDLE_FLAG \
                   "$(IMAGE_DIGEST)"
               else
                 cosign attest --yes \
                   --predicate "$PROVENANCE" \
                   --type slsaprovenance \
+                  $BUNDLE_FLAG \
                   "$(IMAGE_DIGEST)"
               fi
               rm -f "$PROVENANCE"
             displayName: 'Attest SLSA Build Provenance'
             env:
+              AIRGAP: ${{ parameters.airgap }}
               AZURE_TENANT_ID: $(AZURE_TENANT_ID)
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
@@ -406,6 +436,27 @@ stages:
               AZURE_TENANT_ID: $(AZURE_TENANT_ID)
               AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
               AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+
+          # ── AIR-GAP — export bundles + SBOM as a portable archive ──
+          - script: |
+              ./scripts/airgap-export.sh \
+                "$(IMAGE_DIGEST)" \
+                output/sbom/image/sbom-image-trivy.json \
+                output/airgap
+            displayName: 'Create Air-Gap Package'
+            condition: and(succeeded(), eq('${{ parameters.airgap }}', 'true'))
+            env:
+              COSIGN_KMS_KEY: $(COSIGN_KV_KEY)
+              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Air-Gap Package'
+            condition: and(succeeded(), eq('${{ parameters.airgap }}', 'true'))
+            inputs:
+              PathtoPublish: 'output/airgap'
+              ArtifactName: 'airgap-package'
 
           # Upload the attested SBOM to Dependency-Track for continuous monitoring.
           # Non-blocking: DTrack is governance/monitoring, not a CI gate.

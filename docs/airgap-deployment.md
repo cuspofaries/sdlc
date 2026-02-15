@@ -105,30 +105,23 @@ Ceci cree une archive `output/airgap/airgap-<name>-<digest>.tar.gz` contenant :
 | `slsa-attestation.bundle` | Bundle d'attestation SLSA provenance |
 | `manifest.json` | Metadonnees : digest, SHA256 SBOM, mode de verification (keyless/kms/keypair), version cosign |
 
-### Pipeline ADO complet (exemple)
+### Pipeline ADO (`azure-pipelines/pipeline.yml`)
+
+Le pipeline Azure DevOps expose un parametre `airgap` :
 
 ```yaml
-# azure-pipelines.yml — stage supplementaire pour air-gap
-- stage: AirgapExport
-  dependsOn: Publish
-  condition: succeeded()
-  jobs:
-  - job: Export
-    steps:
-    - bash: |
-        # Re-charger l'image depuis l'artifact du stage precedent
-        docker load < output/image/image.tar
-        # Generer le package air-gap
-        AIRGAP_DIR=output/airgap task image:sign
-        AIRGAP_DIR=output/airgap task sbom:attest
-        AIRGAP_DIR=output/airgap task slsa:attest
-        task airgap:export
-      displayName: Create air-gap package
-    - task: PublishPipelineArtifact@1
-      inputs:
-        targetPath: output/airgap/
-        artifactName: airgap-package
+# Lancer le pipeline avec le parametre air-gap active
+# (via l'UI "Run pipeline" ou via az pipelines run --parameters airgap=true)
 ```
+
+Quand `airgap: true` :
+- Les etapes sign/attest ajoutent `--bundle` pour generer les bundles cosign dans `output/airgap/`
+- `airgap-export.sh` cree l'archive (avec export automatique de `cosign.pub` depuis Key Vault si `COSIGN_KV_KEY` est defini)
+- L'archive est publiee comme artifact `airgap-package`
+
+Le mode de verification dans le package depend de la configuration du pipeline :
+- Si `COSIGN_KV_KEY` est dans le variable group → mode **kms** (recommande), `cosign.pub` exportee automatiquement
+- Sinon → mode **keyless** (OIDC via Azure AD Workload Identity), certificat dans les bundles
 
 ### GitHub Actions (workflow reusable)
 

@@ -93,6 +93,8 @@ Pour utiliser KMS :
 
 Si `COSIGN_KV_KEY` n'est pas defini, le pipeline utilise le mode keyless (OIDC/Sigstore) en fallback.
 
+> **Air-gap** : le pipeline expose un parametre `airgap` (boolean, defaut false). Quand active, les etapes sign/attest generent des bundles cosign et `airgap-export.sh` cree un package deployable offline. Si `COSIGN_KV_KEY` est defini, la cle publique est exportee automatiquement dans le package. Voir `docs/airgap-deployment.md` pour le flux complet.
+
 | Fichier | Lignes concernees | Ce qui se passe |
 |---------|-------------------|-----------------|
 | `azure-pipelines/pipeline.yml` | ~247-255 (sign), ~265-278 (attest), ~310-326 (verify) | Branche `if COSIGN_KV_KEY` pour KMS, sinon keyless |
