@@ -21,6 +21,17 @@ COSIGN_KEY="${2:-cosign.key}"
 echo "🔏 Signing image..."
 echo "   Image: ${IMAGE}"
 
+# --- Air-gap bundle output (optional) ---
+# When AIRGAP_BUNDLE_DIR is set, save a cosign bundle file alongside
+# the registry signature. This bundle enables offline verification
+# on air-gapped environments via: cosign verify --bundle --offline
+BUNDLE_ARGS=()
+if [ -n "${AIRGAP_BUNDLE_DIR:-}" ]; then
+    mkdir -p "$AIRGAP_BUNDLE_DIR"
+    BUNDLE_ARGS=(--bundle "${AIRGAP_BUNDLE_DIR}/image-signature.bundle")
+    echo "   Bundle: ${AIRGAP_BUNDLE_DIR}/image-signature.bundle"
+fi
+
 # --- Resolve immutable digest ---
 DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE" 2>/dev/null || true)
 
@@ -38,19 +49,19 @@ echo ""
 
 if [ -n "${COSIGN_KMS_KEY:-}" ]; then
     echo "── Mode: Azure Key Vault KMS ──"
-    cosign sign --yes --key "azurekms://${COSIGN_KMS_KEY}" "$DIGEST"
+    cosign sign --yes --key "azurekms://${COSIGN_KMS_KEY}" ${BUNDLE_ARGS[@]+"${BUNDLE_ARGS[@]}"} "$DIGEST"
 
 elif [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
     echo "── Mode: GitHub Actions keyless (OIDC) ──"
-    cosign sign --yes "$DIGEST"
+    cosign sign --yes ${BUNDLE_ARGS[@]+"${BUNDLE_ARGS[@]}"} "$DIGEST"
 
 elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
     echo "── Mode: Azure DevOps keyless (Workload Identity) ──"
-    cosign sign --yes "$DIGEST"
+    cosign sign --yes ${BUNDLE_ARGS[@]+"${BUNDLE_ARGS[@]}"} "$DIGEST"
 
 elif [ -f "$COSIGN_KEY" ]; then
     echo "── Mode: Keypair (${COSIGN_KEY}) ──"
-    cosign sign --key "$COSIGN_KEY" --yes "$DIGEST"
+    cosign sign --key "$COSIGN_KEY" --yes ${BUNDLE_ARGS[@]+"${BUNDLE_ARGS[@]}"} "$DIGEST"
 
 else
     echo "❌ No signing method available."

@@ -575,6 +575,8 @@ task pipeline \
 | `sbom:fetch` | Fetch SBOM from OCI registry (ORAS) |
 | `sbom:upload` | Upload SBOM to Dependency-Track |
 | `sbom:tamper:test` | Demo SBOM tampering detection |
+| `airgap:export` | Package signed image + cosign bundles for air-gapped deployment |
+| `airgap:verify` | Verify image signature + attestations from air-gap package (offline) |
 | `pipeline` | Full pipeline (build → analyze → publish) |
 | `pipeline:local` | Local pipeline (build → analyze only) |
 | `dtrack:up` | Start local Dependency-Track |
@@ -644,7 +646,9 @@ sdlc/
 │   ├── sbom-tamper-test.sh
 │   ├── sbom-upload-dtrack.sh
 │   ├── sbom-verify.sh
-│   └── slsa-provenance.sh
+│   ├── slsa-provenance.sh
+│   ├── airgap-export.sh              ← Package image + bundles for air-gap
+│   └── airgap-verify.sh              ← Offline verification on air-gapped env
 ├── policies/
 │   ├── sbom-compliance.rego          ← Baseline OPA policies
 │   ├── sbom-compliance_test.rego     ← OPA unit tests
@@ -652,6 +656,7 @@ sdlc/
 │   └── security-exceptions_test.rego ← Exception tests
 ├── docs/
 │   ├── access-governance.md          ← Access control, KMS, RACI, periodic review
+│   ├── airgap-deployment.md          ← Air-gap deployment: export, transfer, offline verify
 │   ├── azure-devops-porting.md       ← Porting checklist for Azure DevOps
 │   ├── executive-summary.md          ← 2-page slides-ready summary for RSSI/auditors
 │   ├── dependency-track.md

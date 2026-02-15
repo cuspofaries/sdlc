@@ -60,6 +60,14 @@ fi
 
 SBOM_SHA=$(sha256sum "$SBOM_FILE" | cut -d' ' -f1)
 echo "   SBOM SHA256: ${SBOM_SHA}"
+
+# --- Air-gap bundle output (optional) ---
+BUNDLE_ARGS=()
+if [ -n "${AIRGAP_BUNDLE_DIR:-}" ]; then
+    mkdir -p "$AIRGAP_BUNDLE_DIR"
+    BUNDLE_ARGS=(--bundle "${AIRGAP_BUNDLE_DIR}/sbom-attestation.bundle")
+    echo "   Bundle: ${AIRGAP_BUNDLE_DIR}/sbom-attestation.bundle"
+fi
 echo ""
 
 # --- Detect environment and attest ---
@@ -72,6 +80,7 @@ if [ -n "${COSIGN_KMS_KEY:-}" ]; then
         --key "azurekms://${COSIGN_KMS_KEY}" \
         --predicate "$SBOM_FILE" \
         --type cyclonedx \
+        ${BUNDLE_ARGS[@]+"${BUNDLE_ARGS[@]}"} \
         "$IMAGE_DIGEST"
 
 elif [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
@@ -80,6 +89,7 @@ elif [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
     cosign attest --yes \
         --predicate "$SBOM_FILE" \
         --type cyclonedx \
+        ${BUNDLE_ARGS[@]+"${BUNDLE_ARGS[@]}"} \
         "$IMAGE_DIGEST"
 
 elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
@@ -97,6 +107,7 @@ elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
         --predicate "$SBOM_FILE" \
         --type cyclonedx \
         --identity-token "$AZURE_TOKEN" \
+        ${BUNDLE_ARGS[@]+"${BUNDLE_ARGS[@]}"} \
         "$IMAGE_DIGEST"
 
 elif [ -f "$COSIGN_KEY" ]; then
@@ -109,6 +120,7 @@ elif [ -f "$COSIGN_KEY" ]; then
         --key "$COSIGN_KEY" \
         --predicate "$SBOM_FILE" \
         --type cyclonedx \
+        ${BUNDLE_ARGS[@]+"${BUNDLE_ARGS[@]}"} \
         "$IMAGE_DIGEST"
 
 else

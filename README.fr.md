@@ -575,6 +575,8 @@ task pipeline \
 | `sbom:fetch` | Recuperer le SBOM depuis le registry OCI (ORAS) |
 | `sbom:upload` | Uploader le SBOM vers Dependency-Track |
 | `sbom:tamper:test` | Démo de détection de falsification SBOM |
+| `airgap:export` | Packager l'image signee + bundles cosign pour deploiement air-gap |
+| `airgap:verify` | Verifier signature + attestations depuis le package air-gap (offline) |
 | `pipeline` | Pipeline complet (build → analyse → publication) |
 | `pipeline:local` | Pipeline local (build → analyse uniquement) |
 | `dtrack:up` | Démarrer Dependency-Track local |
@@ -644,7 +646,9 @@ sdlc/
 │   ├── sbom-tamper-test.sh
 │   ├── sbom-upload-dtrack.sh
 │   ├── sbom-verify.sh
-│   └── slsa-provenance.sh
+│   ├── slsa-provenance.sh
+│   ├── airgap-export.sh              ← Package image + bundles pour air-gap
+│   └── airgap-verify.sh              ← Verification offline sur environnement isole
 ├── policies/
 │   ├── sbom-compliance.rego          ← Politiques OPA baseline
 │   ├── sbom-compliance_test.rego     ← Tests unitaires OPA
@@ -652,6 +656,7 @@ sdlc/
 │   └── security-exceptions_test.rego ← Tests des exceptions
 ├── docs/
 │   ├── access-governance.md          ← Controles d'acces, KMS, RACI, revue periodique
+│   ├── airgap-deployment.md          ← Deploiement air-gap : export, transfert, verification offline
 │   ├── azure-devops-porting.md       ← Checklist de portage Azure DevOps
 │   ├── executive-summary.md          ← Resume executif 2 pages pour RSSI/auditeurs
 │   ├── dependency-track.md

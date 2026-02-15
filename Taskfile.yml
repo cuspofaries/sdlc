@@ -65,6 +65,12 @@ vars:
   # Example: myorgvault.vault.azure.net/cosign-key
   COSIGN_KMS_KEY: '{{.COSIGN_KMS_KEY | default ""}}'
 
+  # -- Air-gap deployment --
+  # Set AIRGAP_DIR to generate cosign bundles during sign/attest for offline verification.
+  # Empty = no bundles generated (default). Example: output/airgap
+  AIRGAP_DIR: '{{.AIRGAP_DIR | default ""}}'
+  AIRGAP_REGISTRY: '{{.AIRGAP_REGISTRY | default "localhost:5000"}}'
+
 env:
   COSIGN_EXPERIMENTAL: "1"
 
@@ -309,7 +315,7 @@ tasks:
   image:sign:
     desc: "Sign image digest with cosign (KMS > CI keyless > keypair)"
     cmds:
-      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" ./scripts/image-sign.sh {{.IMAGE}} {{.COSIGN_KEY}}
+      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" AIRGAP_BUNDLE_DIR="{{.AIRGAP_DIR}}" ./scripts/image-sign.sh {{.IMAGE}} {{.COSIGN_KEY}}
 
   image:verify:
     desc: "Verify image signature (KMS > keypair > keyless)"
@@ -332,12 +338,12 @@ tasks:
   slsa:attest:
     desc: "Attest SLSA build provenance to image digest"
     cmds:
-      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" ./scripts/slsa-provenance.sh {{.IMAGE}} {{.COSIGN_KEY}}
+      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" AIRGAP_BUNDLE_DIR="{{.AIRGAP_DIR}}" ./scripts/slsa-provenance.sh {{.IMAGE}} {{.COSIGN_KEY}}
 
   sbom:attest:
     desc: "Attest image SBOM to image digest (strongest — requires registry)"
     cmds:
-      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" ./scripts/sbom-attest.sh {{.IMAGE}} {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.COSIGN_KEY}}
+      - COSIGN_KMS_KEY="{{.COSIGN_KMS_KEY}}" AIRGAP_BUNDLE_DIR="{{.AIRGAP_DIR}}" ./scripts/sbom-attest.sh {{.IMAGE}} {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.COSIGN_KEY}}
 
   sbom:attest:verify:
     desc: "Verify signature and attestation are published in the registry"
@@ -485,6 +491,24 @@ tasks:
       - echo "✅ Local pipeline complete (no publish)."
       - echo "Outputs in ./output/"
       - echo "=================================================="
+
+  # ==========================================================================
+  # AIR-GAP DEPLOYMENT
+  # ==========================================================================
+
+  airgap:export:
+    desc: "Package signed image + cosign bundles for air-gapped deployment"
+    cmds:
+      - ./scripts/airgap-export.sh {{.IMAGE}} {{.SBOM_DIR}}/image/sbom-image-trivy.json {{.AIRGAP_EXPORT_DIR}} {{.COSIGN_PUB}}
+    vars:
+      AIRGAP_EXPORT_DIR: '{{.AIRGAP_DIR | default "output/airgap"}}'
+
+  airgap:verify:
+    desc: "Verify image signature + attestations from air-gap package (offline)"
+    cmds:
+      - ./scripts/airgap-verify.sh {{.AIRGAP_VERIFY_DIR}} {{.AIRGAP_REGISTRY}}
+    vars:
+      AIRGAP_VERIFY_DIR: '{{.AIRGAP_DIR | default "output/airgap"}}'
 
   # ==========================================================================
   # CLEANUP

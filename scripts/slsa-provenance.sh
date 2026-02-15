@@ -75,8 +75,16 @@ PRED
 echo "Provenance predicate:"
 cat "$PROVENANCE_FILE"
 
+# ── Air-gap bundle output (optional) ──────────────────────────────────────
+BUNDLE_ARGS=()
+if [ -n "${AIRGAP_BUNDLE_DIR:-}" ]; then
+    mkdir -p "$AIRGAP_BUNDLE_DIR"
+    BUNDLE_ARGS=(--bundle "${AIRGAP_BUNDLE_DIR}/slsa-attestation.bundle")
+    echo "   Bundle: ${AIRGAP_BUNDLE_DIR}/slsa-attestation.bundle"
+fi
+
 # ── Attest ──────────────────────────────────────────────────────────────────
-COSIGN_ARGS=(attest --yes --predicate "$PROVENANCE_FILE" --type slsaprovenance)
+COSIGN_ARGS=(attest --yes --predicate "$PROVENANCE_FILE" --type slsaprovenance ${BUNDLE_ARGS[@]+"${BUNDLE_ARGS[@]}"})
 
 if [ -n "${COSIGN_KMS_KEY:-}" ]; then
   echo "── Mode: Azure Key Vault KMS ──"
