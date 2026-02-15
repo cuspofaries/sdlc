@@ -415,6 +415,7 @@ This pipeline is designed to answer auditor questions with documented evidence. 
 
 | Document | Content | Auditor question it answers |
 |----------|---------|----------------------------|
+| [docs/executive-summary.md](docs/executive-summary.md) | 2-page slides-ready summary: business value, compliance mapping (CRA/NIS2/SSDF), evidence for auditors | "Give me the big picture in 5 minutes" |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting, SLA, coordinated disclosure, safe harbor | "How do stakeholders report a security issue?" |
 | [docs/psirt-policy.md](docs/psirt-policy.md) | Triage workflow, remediation SLA by severity, exception management, RACI | "What is your vulnerability response process?" |
 | [docs/access-governance.md](docs/access-governance.md) | Least privilege model, KMS access, OIDC identity constraints, periodic review | "Who can sign images? How are keys managed?" |
@@ -652,6 +653,7 @@ sdlc/
 ├── docs/
 │   ├── access-governance.md          ← Access control, KMS, RACI, periodic review
 │   ├── azure-devops-porting.md       ← Porting checklist for Azure DevOps
+│   ├── executive-summary.md          ← 2-page slides-ready summary for RSSI/auditors
 │   ├── dependency-track.md
 │   ├── dependency-track.fr.md
 │   ├── logging-retention.md          ← Log retention, integrity, audit extraction

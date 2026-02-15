@@ -415,6 +415,7 @@ Ce pipeline est concu pour repondre aux questions d'auditeurs avec des preuves d
 
 | Document | Contenu | Question d'auditeur couverte |
 |----------|---------|------------------------------|
+| [docs/executive-summary.md](docs/executive-summary.md) | Resume executif 2 pages, slides-ready : valeur metier, mapping conformite (CRA/NIS2/SSDF), preuves pour auditeurs | « Donnez-moi la vue d'ensemble en 5 minutes » |
 | [SECURITY.md](SECURITY.md) | Signalement de vulnerabilites, SLA, disclosure coordonnee, safe harbor | « Comment signaler une faille de securite ? » |
 | [docs/psirt-policy.md](docs/psirt-policy.md) | Workflow de triage, SLA par severite, gestion des exceptions, RACI | « Quel est votre processus de reponse aux vulnerabilites ? » |
 | [docs/access-governance.md](docs/access-governance.md) | Modele least privilege, acces KMS, contraintes d'identite OIDC, revue periodique | « Qui peut signer les images ? Comment sont gerees les cles ? » |
@@ -652,6 +653,7 @@ sdlc/
 ├── docs/
 │   ├── access-governance.md          ← Controles d'acces, KMS, RACI, revue periodique
 │   ├── azure-devops-porting.md       ← Checklist de portage Azure DevOps
+│   ├── executive-summary.md          ← Resume executif 2 pages pour RSSI/auditeurs
 │   ├── dependency-track.md
 │   ├── dependency-track.fr.md
 │   ├── logging-retention.md          ← Retention des logs, integrite, extraction audit
