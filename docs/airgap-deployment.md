@@ -103,7 +103,7 @@ Ceci cree une archive `output/airgap/airgap-<name>-<digest>.tar.gz` contenant :
 | `image-signature.bundle` | Bundle de signature cosign |
 | `sbom-attestation.bundle` | Bundle d'attestation SBOM |
 | `slsa-attestation.bundle` | Bundle d'attestation SLSA provenance |
-| `manifest.json` | Metadonnees : digest attendu, SHA256 du SBOM, version cosign |
+| `manifest.json` | Metadonnees : digest, SHA256 SBOM, mode de verification (keyless/kms/keypair), version cosign |
 
 ### Pipeline ADO complet (exemple)
 
@@ -165,12 +165,17 @@ curl -s http://localhost:5000/v2/ && echo "Registry OK" || \
 ./scripts/airgap-verify.sh /opt/airgap-import/ localhost:5000
 ```
 
-Le script execute **5 verifications fail-closed** :
+Le script **auto-detecte le mode de verification** depuis `manifest.json` (champ `verification.mode`) et utilise les bons arguments cosign :
+
+- **kms / keypair** : `--key cosign.pub`
+- **keyless** : `--certificate-oidc-issuer <issuer> --certificate-identity-regexp <regexp>`
+
+Il execute **5 verifications fail-closed** :
 
 | # | Verification | Commande |
 |---|-------------|----------|
 | 1 | Integrite du digest image | `docker load` + comparaison avec `manifest.json` |
-| 2 | Signature de l'image | `cosign verify --key cosign.pub --bundle sig.bundle --offline` |
+| 2 | Signature de l'image | `cosign verify --bundle --offline` + args selon le mode |
 | 3 | Attestation SBOM | `cosign verify-attestation --type cyclonedx --bundle --offline` |
 | 4 | Provenance SLSA | `cosign verify-attestation --type slsaprovenance --bundle --offline` |
 | 5 | Integrite du SBOM | Comparaison SHA256 avec la valeur dans `manifest.json` |
@@ -178,6 +183,8 @@ Le script execute **5 verifications fail-closed** :
 **Si l'une des 5 verifications echoue, le script s'arrete immediatement (fail-closed).**
 
 ### Verification manuelle (sans le script)
+
+Les etapes communes (charger, pousser, resoudre le digest) sont identiques quel que soit le mode. Seuls les arguments de verification changent.
 
 ```bash
 # Charger l'image
@@ -190,23 +197,26 @@ docker push localhost:5000/myapp:imported
 # Resoudre le digest
 DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5000/myapp:imported)
 
-# Verifier la signature
-COSIGN_ALLOW_INSECURE_REGISTRY=true cosign verify \
+export COSIGN_ALLOW_INSECURE_REGISTRY=true  # necessaire pour registry local sans TLS
+```
+
+#### Mode KMS / Keypair (`cosign.pub` dans le package)
+
+```bash
+cosign verify \
   --key cosign.pub \
   --bundle image-signature.bundle \
   --offline \
   "$DIGEST"
 
-# Verifier l'attestation SBOM
-COSIGN_ALLOW_INSECURE_REGISTRY=true cosign verify-attestation \
+cosign verify-attestation \
   --key cosign.pub \
   --type cyclonedx \
   --bundle sbom-attestation.bundle \
   --offline \
   "$DIGEST"
 
-# Verifier la provenance SLSA
-COSIGN_ALLOW_INSECURE_REGISTRY=true cosign verify-attestation \
+cosign verify-attestation \
   --key cosign.pub \
   --type slsaprovenance \
   --bundle slsa-attestation.bundle \
@@ -214,7 +224,81 @@ COSIGN_ALLOW_INSECURE_REGISTRY=true cosign verify-attestation \
   "$DIGEST"
 ```
 
-`COSIGN_ALLOW_INSECURE_REGISTRY=true` est necessaire pour un registry local sans TLS.
+#### Mode Keyless (OIDC — certificat dans les bundles)
+
+```bash
+# Les valeurs oidc_issuer et identity_regexp sont dans manifest.json
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp "github.com/cuspofaries/" \
+  --bundle image-signature.bundle \
+  --offline \
+  "$DIGEST"
+
+cosign verify-attestation \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp "github.com/cuspofaries/" \
+  --type cyclonedx \
+  --bundle sbom-attestation.bundle \
+  --offline \
+  "$DIGEST"
+
+cosign verify-attestation \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp "github.com/cuspofaries/" \
+  --type slsaprovenance \
+  --bundle slsa-attestation.bundle \
+  --offline \
+  "$DIGEST"
+```
+
+> **Note :** En mode keyless, `cosign.pub` n'est pas present dans le package. Le certificat Fulcio est embarque dans chaque bundle.
+
+---
+
+## Contenu de manifest.json
+
+Le fichier `manifest.json` (genere par `airgap-export.sh`) contient les metadonnees necessaires a la verification. Depuis la version 1.1, il inclut le mode de signature pour auto-detection :
+
+```json
+{
+  "version": "1.1",
+  "created": "2025-02-15T14:30:00Z",
+  "image": {
+    "reference": "myregistry.azurecr.io/myapp",
+    "digest": "sha256:abc123def456...",
+    "tar_sha256": "7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677..."
+  },
+  "sbom": {
+    "file": "sbom.json",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "format": "cyclonedx"
+  },
+  "bundles": {
+    "signature": "image-signature.bundle",
+    "sbom_attestation": "sbom-attestation.bundle",
+    "slsa_attestation": "slsa-attestation.bundle"
+  },
+  "verification": {
+    "mode": "keyless",
+    "public_key": null,
+    "oidc_issuer": "https://token.actions.githubusercontent.com",
+    "identity_regexp": "github.com/cuspofaries/"
+  },
+  "tools": {
+    "cosign_version": "cosign v3.0.0"
+  }
+}
+```
+
+| Champ | Role |
+|-------|------|
+| `verification.mode` | `kms`, `keypair` ou `keyless` — determine les arguments cosign a utiliser |
+| `verification.public_key` | `"cosign.pub"` (kms/keypair) ou `null` (keyless) |
+| `verification.oidc_issuer` | URL de l'emetteur OIDC (keyless uniquement) |
+| `verification.identity_regexp` | Regexp pour valider l'identite du signataire (keyless uniquement) |
+
+`airgap-verify.sh` lit automatiquement ces champs pour choisir les bons arguments de verification.
 
 ---
 
@@ -268,6 +352,7 @@ Avec `--offline`, cosign verifie le `rekorBundle` localement au lieu de contacte
 | `error verifying bundle` | Version cosign incompatible | Utiliser la meme version majeure (v3.x) cote pipeline et cote air-gap |
 | `TLS handshake error` | Registry local sans TLS | `export COSIGN_ALLOW_INSECURE_REGISTRY=true` |
 | `FATAL: bundle missing` | Pipeline execute sans `AIRGAP_DIR` | Re-executer avec `task pipeline AIRGAP_DIR=output/airgap` |
+| `invalid signature when validating ASN.1` | Mode de verification different du mode de signature | Verifier `verification.mode` dans `manifest.json` et utiliser les bons flags (`--key` vs `--certificate-*`) |
 
 ## Evidence — Comment verifier
 

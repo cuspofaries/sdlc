@@ -82,24 +82,49 @@ SBOM_SHA=$(sha256sum "${BUNDLE_DIR}/sbom.json" | cut -d' ' -f1)
 echo "   ✅ sbom.json (SHA256: ${SBOM_SHA})"
 echo ""
 
-# ── Export public key ───────────────────────────────────────────────────────
+# ── Detect signing mode and export public key ──────────────────────────────
 echo "── Exporting public key ──"
+SIGNING_MODE="unknown"
+
 if [ -n "${COSIGN_KMS_KEY:-}" ]; then
+    SIGNING_MODE="kms"
     cosign public-key --key "azurekms://${COSIGN_KMS_KEY}" > "${BUNDLE_DIR}/cosign.pub"
     echo "   ✅ cosign.pub (exported from KMS)"
+elif [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+    SIGNING_MODE="keyless"
+    echo "   ℹ️  Keyless mode (GitHub Actions OIDC) — certificate embedded in bundles"
+elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
+    SIGNING_MODE="keyless"
+    echo "   ℹ️  Keyless mode (Azure DevOps OIDC) — certificate embedded in bundles"
 elif [ -f "$COSIGN_PUB" ]; then
+    SIGNING_MODE="keypair"
     cp "$COSIGN_PUB" "${BUNDLE_DIR}/cosign.pub"
     echo "   ✅ cosign.pub (copied from ${COSIGN_PUB})"
 else
-    echo "   ⚠️  No public key available. For keyless mode, the certificate is embedded in bundles." >&2
+    echo "   ⚠️  No public key available and no OIDC detected." >&2
 fi
 echo ""
+
+# ── Build verification block for manifest ────────────────────────────────────
+OIDC_ISSUER="${COSIGN_OIDC_ISSUER:-}"
+IDENTITY_REGEXP="${COSIGN_IDENTITY_REGEXP:-}"
+
+if [ "$SIGNING_MODE" = "keyless" ] && [ -z "$OIDC_ISSUER" ]; then
+    # Auto-detect OIDC issuer from CI environment
+    if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+        OIDC_ISSUER="https://token.actions.githubusercontent.com"
+        IDENTITY_REGEXP="${IDENTITY_REGEXP:-github.com/${GITHUB_REPOSITORY_OWNER:-}}"
+    elif [ -n "${SYSTEM_OIDCREQUESTURI:-}" ]; then
+        OIDC_ISSUER="https://vstoken.dev.azure.com/${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI##*/}"
+        IDENTITY_REGEXP="${IDENTITY_REGEXP:-${SYSTEM_TEAMPROJECT:-}}"
+    fi
+fi
 
 # ── Create manifest ─────────────────────────────────────────────────────────
 echo "── Creating manifest ──"
 cat > "${BUNDLE_DIR}/manifest.json" <<MANIFEST
 {
-  "version": "1.0",
+  "version": "1.1",
   "created": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
   "image": {
     "reference": "${IMAGE_BASE}",
@@ -116,7 +141,12 @@ cat > "${BUNDLE_DIR}/manifest.json" <<MANIFEST
     "sbom_attestation": "sbom-attestation.bundle",
     "slsa_attestation": "slsa-attestation.bundle"
   },
-  "public_key": "cosign.pub",
+  "verification": {
+    "mode": "${SIGNING_MODE}",
+    "public_key": $([ "$SIGNING_MODE" != "keyless" ] && echo '"cosign.pub"' || echo 'null'),
+    "oidc_issuer": $([ -n "$OIDC_ISSUER" ] && echo "\"${OIDC_ISSUER}\"" || echo 'null'),
+    "identity_regexp": $([ -n "$IDENTITY_REGEXP" ] && echo "\"${IDENTITY_REGEXP}\"" || echo 'null')
+  },
   "tools": {
     "cosign_version": "$(cosign version 2>/dev/null | head -1 || echo 'unknown')"
   }
@@ -128,10 +158,17 @@ echo ""
 # ── Create archive ──────────────────────────────────────────────────────────
 echo "── Creating archive ──"
 ARCHIVE_NAME="airgap-${IMAGE_NAME}-$(echo "$DIGEST_HASH" | cut -c8-19).tar.gz"
+ARCHIVE_FILES=(image.tar sbom.json manifest.json
+    image-signature.bundle sbom-attestation.bundle slsa-attestation.bundle)
+
+# Include cosign.pub only if it exists (not present in keyless mode)
+if [ -f "${BUNDLE_DIR}/cosign.pub" ]; then
+    ARCHIVE_FILES+=(cosign.pub)
+fi
+
 tar -czf "${BUNDLE_DIR}/${ARCHIVE_NAME}" \
     -C "$BUNDLE_DIR" \
-    image.tar sbom.json manifest.json cosign.pub \
-    image-signature.bundle sbom-attestation.bundle slsa-attestation.bundle
+    "${ARCHIVE_FILES[@]}"
 
 ARCHIVE_SHA=$(sha256sum "${BUNDLE_DIR}/${ARCHIVE_NAME}" | cut -d' ' -f1)
 
