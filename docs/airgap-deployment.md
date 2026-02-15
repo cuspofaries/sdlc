@@ -130,6 +130,40 @@ Ceci cree une archive `output/airgap/airgap-<name>-<digest>.tar.gz` contenant :
         artifactName: airgap-package
 ```
 
+### GitHub Actions (workflow reusable)
+
+Le workflow reusable expose un input `airgap` :
+
+```yaml
+# .github/workflows/build.yml (caller)
+jobs:
+  supply-chain:
+    uses: cuspofaries/sdlc/.github/workflows/supply-chain-reusable.yml@v1
+    with:
+      context: ./app
+      image-name: my-app
+      airgap: true          # ← active la generation du package air-gap
+    secrets:
+      REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Quand `airgap: true` :
+- Les etapes sign/attest ajoutent `--bundle` pour generer les bundles cosign dans `output/airgap/`
+- `airgap-export.sh` cree l'archive `airgap-*.tar.gz`
+- L'archive est uploadee comme artifact `airgap-package` (retention 30 jours)
+
+L'output `airgap-artifact` permet a un job en aval de telecharger l'artifact :
+
+```yaml
+  deploy:
+    needs: supply-chain
+    if: ${{ needs.supply-chain.outputs.airgap-artifact != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.supply-chain.outputs.airgap-artifact }}
+```
+
 ---
 
 ## Cote environnement isole (machine Linux)

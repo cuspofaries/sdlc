@@ -493,6 +493,7 @@ Pin to `@v1` for automatic minor/patch updates, or `@v1.2.0` for exact version p
 | `trivy-severity` | No | `HIGH,CRITICAL` | Severity filter for vulnerability scan |
 | `trivy-exit-code` | No | `"1"` | Exit code on findings (`1` = fail, `0` = warn) |
 | `exceptions-file` | No | `""` | Path to `security-exceptions.yaml` in caller repo (empty = no exceptions) |
+| `airgap` | No | `false` | Generate air-gap deployment package (cosign bundles + archive) |
 
 ### Custom policies
 
