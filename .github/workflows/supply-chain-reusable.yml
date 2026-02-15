@@ -62,6 +62,11 @@ on:
         required: false
         type: string
         default: ""
+      airgap:
+        description: "Generate air-gap deployment package (cosign bundles + archive)"
+        required: false
+        type: boolean
+        default: false
     secrets:
       REGISTRY_TOKEN:
         description: "Token to push image to registry (e.g. GITHUB_TOKEN)"
@@ -73,6 +78,9 @@ on:
       image:
         description: "Full image reference with digest (registry/owner/name@sha256:...)"
         value: ${{ jobs.supply-chain.outputs.image }}
+      airgap-artifact:
+        description: "Name of the air-gap artifact (empty if airgap=false)"
+        value: ${{ jobs.supply-chain.outputs.airgap-artifact }}
 
 permissions:
   contents: read
@@ -84,6 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image: ${{ steps.digest.outputs.image }}
+      airgap-artifact: ${{ inputs.airgap && 'airgap-package' || '' }}
 
     steps:
       # =====================================================================
@@ -308,13 +317,21 @@ jobs:
           echo "digest=${DIGEST_HASH}" >> "$GITHUB_OUTPUT"
           echo "Image digest: ${DIGEST}"
 
+      - name: Prepare air-gap bundle directory
+        if: ${{ inputs.airgap }}
+        run: mkdir -p output/airgap
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
       - name: Sign image (keyless)
         run: |
+          BUNDLE_FLAG=""
+          if [ "${{ inputs.airgap }}" = "true" ]; then
+            BUNDLE_FLAG="--bundle output/airgap/image-signature.bundle"
+          fi
           echo "Signing digest: ${{ steps.digest.outputs.image }}"
-          cosign sign --yes "${{ steps.digest.outputs.image }}"
+          cosign sign --yes $BUNDLE_FLAG "${{ steps.digest.outputs.image }}"
         env:
           COSIGN_EXPERIMENTAL: "1"
 
@@ -324,10 +341,15 @@ jobs:
 
       - name: Attest SBOM to image digest
         run: |
+          BUNDLE_FLAG=""
+          if [ "${{ inputs.airgap }}" = "true" ]; then
+            BUNDLE_FLAG="--bundle output/airgap/sbom-attestation.bundle"
+          fi
           echo "Attesting SBOM to digest: ${{ steps.digest.outputs.image }}"
           cosign attest --yes \
             --predicate output/sbom/image/sbom-image-trivy.json \
             --type cyclonedx \
+            $BUNDLE_FLAG \
             "${{ steps.digest.outputs.image }}"
         env:
           COSIGN_EXPERIMENTAL: "1"
@@ -366,10 +388,15 @@ jobs:
             ]
           }
           PRED
+          BUNDLE_FLAG=""
+          if [ "${{ inputs.airgap }}" = "true" ]; then
+            BUNDLE_FLAG="--bundle output/airgap/slsa-attestation.bundle"
+          fi
           echo "Attesting SLSA provenance to: ${{ steps.digest.outputs.image }}"
           cosign attest --yes \
             --predicate "$PROVENANCE" \
             --type slsaprovenance \
+            $BUNDLE_FLAG \
             "${{ steps.digest.outputs.image }}"
           rm -f "$PROVENANCE"
         env:
@@ -417,6 +444,29 @@ jobs:
             --type slsaprovenance \
             "${{ steps.digest.outputs.image }}" 2>&1 | tee output/verify/verify-attestation-slsa.log
           echo "✅ SLSA provenance verified"
+
+      # =====================================================================
+      # AIR-GAP — export bundles + SBOM as a portable archive
+      # =====================================================================
+
+      - name: Create air-gap package
+        if: ${{ inputs.airgap }}
+        run: |
+          .sdlc/scripts/airgap-export.sh \
+            "${{ steps.digest.outputs.image }}" \
+            output/sbom/image/sbom-image-trivy.json \
+            output/airgap
+        env:
+          COSIGN_OIDC_ISSUER: "https://token.actions.githubusercontent.com"
+          COSIGN_IDENTITY_REGEXP: "github.com/${{ github.repository_owner }}/"
+
+      - name: Upload air-gap package
+        if: ${{ inputs.airgap }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: airgap-package
+          path: output/airgap/airgap-*.tar.gz
+          retention-days: 30
 
       # Upload the attested SBOM to Dependency-Track for continuous monitoring.
       # Non-blocking: DTrack is governance/monitoring, not a CI gate.
