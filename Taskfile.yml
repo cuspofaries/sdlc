@@ -57,7 +57,7 @@ vars:
   # -- Tool versions (pinned for reproducibility) --
   TRIVY_VERSION: '0.69.1'   # renovate: datasource=github-releases depName=aquasecurity/trivy
   COSIGN_VERSION: 'v3.0.4'  # renovate: datasource=github-releases depName=sigstore/cosign
-  CDXGEN_VERSION: '10.10.7' # renovate: datasource=npm depName=@cyclonedx/cdxgen
+  CDXGEN_VERSION: '11.1.7' # renovate: datasource=npm depName=@cyclonedx/cdxgen
   OPA_VERSION: 'v1.13.1'    # renovate: datasource=github-releases depName=open-policy-agent/opa
   ORAS_VERSION: '1.3.0'     # renovate: datasource=github-releases depName=oras-project/oras
   YQ_VERSION: 'v4.52.4'     # renovate: datasource=github-releases depName=mikefarah/yq
