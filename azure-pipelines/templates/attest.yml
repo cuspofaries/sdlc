@@ -1,0 +1,101 @@
+# Step template: Attest SBOM + SLSA provenance (KMS or keyless)
+parameters:
+  - name: imageDigest
+    type: string
+  - name: cosignKvKey
+    type: string
+  - name: airgap
+    type: string
+    default: 'false'
+  - name: sbomPath
+    type: string
+    default: 'output/sbom/image/sbom-image-trivy.json'
+
+steps:
+  # Attest the SAME SBOM from BuildAndAnalyze stage (via artifact).
+  # Never regenerate — this file must be untouched since Phase 2.
+  - script: |
+      BUNDLE_FLAG=""
+      if [ "$AIRGAP" = "True" ]; then
+        BUNDLE_FLAG="--bundle output/airgap/sbom-attestation.bundle"
+      fi
+      echo "Attesting SBOM to digest: ${{ parameters.imageDigest }}"
+      if [ -n "${{ parameters.cosignKvKey }}" ]; then
+        echo "Mode: Azure Key Vault KMS"
+        cosign attest --yes \
+          --key "azurekms://${{ parameters.cosignKvKey }}" \
+          --predicate ${{ parameters.sbomPath }} \
+          --type cyclonedx \
+          $BUNDLE_FLAG \
+          "${{ parameters.imageDigest }}"
+      else
+        echo "Mode: keyless (OIDC)"
+        cosign attest --yes \
+          --predicate ${{ parameters.sbomPath }} \
+          --type cyclonedx \
+          $BUNDLE_FLAG \
+          "${{ parameters.imageDigest }}"
+      fi
+    displayName: 'Attest SBOM to Image Digest'
+    env:
+      AIRGAP: ${{ parameters.airgap }}
+      AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+      AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+      AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+
+  # Attest SLSA build provenance
+  - script: |
+      echo "Attesting SLSA provenance to digest: ${{ parameters.imageDigest }}"
+      TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      PROVENANCE=$(mktemp)
+      cat > "$PROVENANCE" <<PRED
+      {
+        "builder": {
+          "id": "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+        },
+        "buildType": "https://slsa.dev/container-based-build/v0.1",
+        "invocation": {
+          "configSource": {
+            "uri": "$(Build.Repository.Uri)",
+            "digest": { "sha1": "$(Build.SourceVersion)" }
+          },
+          "parameters": { "buildId": "$(Build.BuildId)" }
+        },
+        "metadata": {
+          "buildInvocationId": "$(Build.BuildId)",
+          "buildStartedOn": "$TIMESTAMP",
+          "completeness": { "parameters": true, "environment": false, "materials": false }
+        },
+        "materials": [
+          {
+            "uri": "$(Build.Repository.Uri)",
+            "digest": { "sha1": "$(Build.SourceVersion)" }
+          }
+        ]
+      }
+      PRED
+      BUNDLE_FLAG=""
+      if [ "$AIRGAP" = "True" ]; then
+        BUNDLE_FLAG="--bundle output/airgap/slsa-attestation.bundle"
+      fi
+      if [ -n "${{ parameters.cosignKvKey }}" ]; then
+        cosign attest --yes \
+          --key "azurekms://${{ parameters.cosignKvKey }}" \
+          --predicate "$PROVENANCE" \
+          --type slsaprovenance \
+          $BUNDLE_FLAG \
+          "${{ parameters.imageDigest }}"
+      else
+        cosign attest --yes \
+          --predicate "$PROVENANCE" \
+          --type slsaprovenance \
+          $BUNDLE_FLAG \
+          "${{ parameters.imageDigest }}"
+      fi
+      rm -f "$PROVENANCE"
+    displayName: 'Attest SLSA Build Provenance'
+    env:
+      AIRGAP: ${{ parameters.airgap }}
+      AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+      AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+      AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)

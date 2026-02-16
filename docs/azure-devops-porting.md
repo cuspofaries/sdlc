@@ -14,7 +14,8 @@ Le regexp doit etre le plus specifique possible : **org + projet + pipeline**, p
 
 | Fichier | Ligne(s) | Valeur actuelle | A remplacer par |
 |---------|----------|-----------------|-----------------|
-| `azure-pipelines/pipeline.yml` | ~318, ~340, ~472 | `"https://dev.azure.com/cuspofaries/sdlc/_build"` | `"https://dev.azure.com/<VOTRE_ORG>/<VOTRE_PROJET>/_build"` |
+| `azure-pipelines/templates/verify.yml` | parametre `identityRegexp` (defaut) | `"https://dev.azure.com/cuspofaries/sdlc/_build"` | `"https://dev.azure.com/<VOTRE_ORG>/<VOTRE_PROJET>/_build"` |
+| `azure-pipelines/pipeline.yml` | ~352 (DailyRescan extract) | `"https://dev.azure.com/cuspofaries/sdlc/_build"` | `"https://dev.azure.com/<VOTRE_ORG>/<VOTRE_PROJET>/_build"` |
 | `.github/workflows/supply-chain-reusable.yml` | ~321, ~329 | `"github.com/cuspofaries/"` | `"github.com/<VOTRE_ORG>/"` |
 | `Taskfile.yml` | ~280, ~332, ~338 | `"github.com/cuspofaries/"` | `"github.com/<VOTRE_ORG>/"` |
 | `scripts/sbom-attest.sh` | N/A | Pas de regexp hardcodee | Aucune modification |
@@ -32,7 +33,7 @@ L'issuer OIDC est l'autorite qui emet les tokens d'identite pour le mode keyless
 
 | Fichier | Valeur actuelle | Contexte |
 |---------|-----------------|----------|
-| `azure-pipelines/pipeline.yml` | `https://vstoken.dev.azure.com` | Issuer Azure DevOps — **ne pas modifier** |
+| `azure-pipelines/templates/verify.yml` | `https://vstoken.dev.azure.com` (parametre `oidcIssuer`) | Issuer Azure DevOps — **ne pas modifier** |
 | `.github/workflows/supply-chain-reusable.yml` | `https://token.actions.githubusercontent.com` | Issuer GitHub Actions — **ne pas modifier** sauf si vous migrez entierement hors de GitHub |
 | `Taskfile.yml` | `https://token.actions.githubusercontent.com` | Utilise par defaut pour la verification locale. Si vous ne verifiez jamais depuis GitHub, remplacez par `https://vstoken.dev.azure.com` |
 
@@ -42,8 +43,8 @@ L'issuer OIDC est l'autorite qui emet les tokens d'identite pour le mode keyless
 
 | Fichier | Ligne(s) | Nom actuel | Description |
 |---------|----------|------------|-------------|
-| `azure-pipelines/pipeline.yml` | ~139 | `azure-service-connection` | Service connection Azure Resource Manager (pour Key Vault + ACR) |
-| `azure-pipelines/pipeline.yml` | ~154 | `acr-service-connection` | Service connection Docker Registry (pour login ACR) |
+| `azure-pipelines/templates/azure-login.yml` | parametre `azureServiceConnection` (defaut) | `azure-service-connection` | Service connection Azure Resource Manager (pour Key Vault + ACR) |
+| `azure-pipelines/pipeline.yml` | ~157, ~291 | `acr-service-connection` | Service connection Docker Registry (pour login ACR) |
 
 > Ces noms doivent correspondre exactement a ceux crees dans Project Settings > Service connections.
 
@@ -51,7 +52,7 @@ L'issuer OIDC est l'autorite qui emet les tokens d'identite pour le mode keyless
 
 ## 4. Variable group et variables
 
-Le pipeline Azure DevOps attend un variable group nomme `supply-chain` (ligne ~37 de `azure-pipelines/pipeline.yml`).
+Le pipeline Azure DevOps attend un variable group nomme `supply-chain` (ligne ~43 de `azure-pipelines/pipeline.yml`).
 
 | Variable | Obligatoire | Description | Exemple |
 |----------|-------------|-------------|---------|
@@ -66,8 +67,8 @@ Le pipeline Azure DevOps attend un variable group nomme `supply-chain` (ligne ~3
 
 | Fichier | Ligne(s) | Valeur actuelle | A adapter |
 |---------|----------|-----------------|-----------|
-| `azure-pipelines/pipeline.yml` | ~39 | `IMAGE_NAME: 'supply-chain-poc'` | Nom de votre image |
-| `azure-pipelines/pipeline.yml` | ~43 | `REGISTRY: '$(ACR_NAME).azurecr.io'` | Ne pas modifier si ACR |
+| `azure-pipelines/pipeline.yml` | ~45 | `IMAGE_NAME: 'supply-chain-poc'` | Nom de votre image |
+| `azure-pipelines/pipeline.yml` | ~49 | `REGISTRY: '$(ACR_NAME).azurecr.io'` | Ne pas modifier si ACR |
 | `Taskfile.yml` | ~26 | `REGISTRY: 'localhost:5000'` (defaut) | Passer en parametre : `task build REGISTRY=myacr.azurecr.io` |
 | `Taskfile.yml` | ~27 | `IMAGE_NAME: 'supply-chain-poc'` (defaut) | Passer en parametre |
 
@@ -97,7 +98,9 @@ Si `COSIGN_KV_KEY` n'est pas defini, le pipeline utilise le mode keyless (OIDC/S
 
 | Fichier | Lignes concernees | Ce qui se passe |
 |---------|-------------------|-----------------|
-| `azure-pipelines/pipeline.yml` | ~247-255 (sign), ~265-278 (attest), ~310-326 (verify) | Branche `if COSIGN_KV_KEY` pour KMS, sinon keyless |
+| `azure-pipelines/templates/sign.yml` | sign step | Branche `if COSIGN_KV_KEY` pour KMS, sinon keyless |
+| `azure-pipelines/templates/attest.yml` | attest SBOM + SLSA steps | Branche `if COSIGN_KV_KEY` pour KMS, sinon keyless |
+| `azure-pipelines/templates/verify.yml` | verify 1/3, 2/3, 3/3 steps | Branche `if COSIGN_KV_KEY` pour KMS, sinon keyless |
 | `Taskfile.yml` | ~241-257 (`image:sign`), ~298-302 (`sbom:attest`) | Variable `COSIGN_KMS_KEY` passee aux scripts |
 | `scripts/sbom-attest.sh` | ~65-71 | Premier `if` verifie `COSIGN_KMS_KEY` |
 | `scripts/sbom-sign.sh` | ~42-49 | Premier `if` verifie `COSIGN_KMS_KEY` |
@@ -110,7 +113,7 @@ Le stage DailyRescan utilise `az acr repository show` pour resoudre le digest de
 
 | Fichier | Ligne(s) | Valeur actuelle | A adapter |
 |---------|----------|-----------------|-----------|
-| `azure-pipelines/pipeline.yml` | ~413 | `--image "$(IMAGE_NAME):latest"` | Remplacer `latest` par votre tag de reference si different |
+| `azure-pipelines/pipeline.yml` | ~299 | `--image "$(IMAGE_NAME):latest"` | Remplacer `latest` par votre tag de reference si different |
 
 ---
 
@@ -145,7 +148,9 @@ cosign verify-attestation --key azurekms://<vault>.vault.azure.net/<key> \
 
 | Fichier | Modifications | Priorite |
 |---------|---------------|----------|
-| `azure-pipelines/pipeline.yml` | Identity regexp, service connections, IMAGE_NAME, ACR tag | **Critique** |
+| `azure-pipelines/pipeline.yml` | IMAGE_NAME, ACR tag | **Critique** |
+| `azure-pipelines/templates/verify.yml` | Identity regexp (parametre `identityRegexp`) | **Critique** |
+| `azure-pipelines/templates/azure-login.yml` | Service connection (parametre `azureServiceConnection`) | **Critique** |
 | `Taskfile.yml` | Identity regexp, chemin Dockerfile, IMAGE_NAME (defaut) | **Haute** |
 | `.github/workflows/supply-chain-reusable.yml` | Identity regexp (si GitHub est aussi utilise) | Moyenne |
 | `scripts/sbom-attest.sh` | Aucune (parametres passes par env) | Aucune |

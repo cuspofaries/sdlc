@@ -1,0 +1,10 @@
+# Step template: Install go-task
+parameters:
+  - name: version
+    type: string
+    default: 'v3.48.0'
+
+steps:
+  - script: |
+      sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin ${{ parameters.version }} # renovate: datasource=github-releases depName=go-task/task
+    displayName: 'Install Task'

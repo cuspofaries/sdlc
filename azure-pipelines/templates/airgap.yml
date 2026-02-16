@@ -1,0 +1,33 @@
+# Step template: Air-gap export + publish artifact
+parameters:
+  - name: imageDigest
+    type: string
+  - name: cosignKvKey
+    type: string
+  - name: airgap
+    type: string
+    default: 'false'
+  - name: sbomPath
+    type: string
+    default: 'output/sbom/image/sbom-image-trivy.json'
+
+steps:
+  - script: |
+      ./scripts/airgap-export.sh \
+        "${{ parameters.imageDigest }}" \
+        ${{ parameters.sbomPath }} \
+        output/airgap
+    displayName: 'Create Air-Gap Package'
+    condition: and(succeeded(), eq('${{ parameters.airgap }}', 'true'))
+    env:
+      COSIGN_KMS_KEY: ${{ parameters.cosignKvKey }}
+      AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+      AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+      AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Air-Gap Package'
+    condition: and(succeeded(), eq('${{ parameters.airgap }}', 'true'))
+    inputs:
+      PathtoPublish: 'output/airgap'
+      ArtifactName: 'airgap-package'

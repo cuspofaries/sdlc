@@ -68,10 +68,7 @@ stages:
         steps:
           - checkout: self
 
-          # Install go-task
-          - script: |
-              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0 # renovate: datasource=github-releases depName=go-task/task
-            displayName: 'Install Task'
+          - template: templates/install-task.yml
 
           # Install SBOM toolchain
           - script: sudo task install
@@ -148,27 +145,12 @@ stages:
         steps:
           - checkout: self
 
-          # Install tools needed for publish phase
-          - script: |
-              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0 # renovate: datasource=github-releases depName=go-task/task
-            displayName: 'Install Task'
+          - template: templates/install-task.yml
 
           - script: sudo task install:cosign
             displayName: 'Install Cosign'
 
-          # Login to Azure (needed for Key Vault KMS and ACR)
-          - task: AzureCLI@2
-            displayName: 'Azure Login & Set Credentials'
-            inputs:
-              azureSubscription: 'azure-service-connection'
-              scriptType: bash
-              addSpnToEnvironment: true
-              scriptLocation: inlineScript
-              inlineScript: |
-                # Export credentials for cosign to use Azure KMS
-                echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
-                echo "##vso[task.setvariable variable=AZURE_CLIENT_ID]$servicePrincipalId"
-                echo "##vso[task.setvariable variable=AZURE_CLIENT_SECRET;issecret=true]$servicePrincipalKey"
+          - template: templates/azure-login.yml
 
           # Login to ACR
           - task: Docker@2
@@ -242,221 +224,28 @@ stages:
               echo "Registry digest: $DIGEST"
             displayName: 'Get Registry Digest'
 
-          - script: mkdir -p output/airgap
-            displayName: 'Prepare Air-Gap Bundle Directory'
-            condition: and(succeeded(), eq('${{ parameters.airgap }}', 'true'))
+          - template: templates/sign.yml
+            parameters:
+              imageDigest: $(IMAGE_DIGEST)
+              cosignKvKey: $(COSIGN_KV_KEY)
+              airgap: ${{ parameters.airgap }}
 
-          # Sign image — Key Vault KMS (preferred) or keyless (fallback)
-          - script: |
-              BUNDLE_FLAG=""
-              if [ "$AIRGAP" = "True" ]; then
-                BUNDLE_FLAG="--bundle output/airgap/image-signature.bundle"
-              fi
-              echo "Signing digest: $(IMAGE_DIGEST)"
-              if [ -n "$(COSIGN_KV_KEY)" ]; then
-                echo "Mode: Azure Key Vault KMS"
-                cosign sign --yes \
-                  --key "azurekms://$(COSIGN_KV_KEY)" \
-                  $BUNDLE_FLAG \
-                  "$(IMAGE_DIGEST)"
-              else
-                echo "Mode: keyless (OIDC)"
-                cosign sign --yes $BUNDLE_FLAG "$(IMAGE_DIGEST)"
-              fi
-            displayName: 'Sign Image Digest'
-            env:
-              AIRGAP: ${{ parameters.airgap }}
-              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
-              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
-              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+          - template: templates/attest.yml
+            parameters:
+              imageDigest: $(IMAGE_DIGEST)
+              cosignKvKey: $(COSIGN_KV_KEY)
+              airgap: ${{ parameters.airgap }}
 
-          # Attest the SAME SBOM from BuildAndAnalyze stage (via artifact).
-          # Never regenerate — this file must be untouched since Phase 2.
-          - script: |
-              BUNDLE_FLAG=""
-              if [ "$AIRGAP" = "True" ]; then
-                BUNDLE_FLAG="--bundle output/airgap/sbom-attestation.bundle"
-              fi
-              echo "Attesting SBOM to digest: $(IMAGE_DIGEST)"
-              if [ -n "$(COSIGN_KV_KEY)" ]; then
-                echo "Mode: Azure Key Vault KMS"
-                cosign attest --yes \
-                  --key "azurekms://$(COSIGN_KV_KEY)" \
-                  --predicate output/sbom/image/sbom-image-trivy.json \
-                  --type cyclonedx \
-                  $BUNDLE_FLAG \
-                  "$(IMAGE_DIGEST)"
-              else
-                echo "Mode: keyless (OIDC)"
-                cosign attest --yes \
-                  --predicate output/sbom/image/sbom-image-trivy.json \
-                  --type cyclonedx \
-                  $BUNDLE_FLAG \
-                  "$(IMAGE_DIGEST)"
-              fi
-            displayName: 'Attest SBOM to Image Digest'
-            env:
-              AIRGAP: ${{ parameters.airgap }}
-              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
-              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
-              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+          - template: templates/verify.yml
+            parameters:
+              imageDigest: $(IMAGE_DIGEST)
+              cosignKvKey: $(COSIGN_KV_KEY)
 
-          # Attest SLSA build provenance
-          - script: |
-              echo "Attesting SLSA provenance to digest: $(IMAGE_DIGEST)"
-              TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-              PROVENANCE=$(mktemp)
-              cat > "$PROVENANCE" <<PRED
-              {
-                "builder": {
-                  "id": "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
-                },
-                "buildType": "https://slsa.dev/container-based-build/v0.1",
-                "invocation": {
-                  "configSource": {
-                    "uri": "$(Build.Repository.Uri)",
-                    "digest": { "sha1": "$(Build.SourceVersion)" }
-                  },
-                  "parameters": { "buildId": "$(Build.BuildId)" }
-                },
-                "metadata": {
-                  "buildInvocationId": "$(Build.BuildId)",
-                  "buildStartedOn": "$TIMESTAMP",
-                  "completeness": { "parameters": true, "environment": false, "materials": false }
-                },
-                "materials": [
-                  {
-                    "uri": "$(Build.Repository.Uri)",
-                    "digest": { "sha1": "$(Build.SourceVersion)" }
-                  }
-                ]
-              }
-              PRED
-              BUNDLE_FLAG=""
-              if [ "$AIRGAP" = "True" ]; then
-                BUNDLE_FLAG="--bundle output/airgap/slsa-attestation.bundle"
-              fi
-              if [ -n "$(COSIGN_KV_KEY)" ]; then
-                cosign attest --yes \
-                  --key "azurekms://$(COSIGN_KV_KEY)" \
-                  --predicate "$PROVENANCE" \
-                  --type slsaprovenance \
-                  $BUNDLE_FLAG \
-                  "$(IMAGE_DIGEST)"
-              else
-                cosign attest --yes \
-                  --predicate "$PROVENANCE" \
-                  --type slsaprovenance \
-                  $BUNDLE_FLAG \
-                  "$(IMAGE_DIGEST)"
-              fi
-              rm -f "$PROVENANCE"
-            displayName: 'Attest SLSA Build Provenance'
-            env:
-              AIRGAP: ${{ parameters.airgap }}
-              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
-              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
-              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
-
-          # ── VERIFY (fail-closed: all 3 must pass) ──
-          # Identity constraints on every verify: proves who built the image.
-          # Logs archived in output/verify/ for audit trail.
-          - script: |
-              mkdir -p output/verify
-              echo "Referrers for: $(IMAGE_DIGEST)"
-              cosign tree "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/cosign-tree.log || true
-            displayName: 'Debug: cosign tree (show referrers)'
-
-          - script: |
-              mkdir -p output/verify
-              echo "Digest: $(IMAGE_DIGEST)"
-              if [ -n "$(COSIGN_KV_KEY)" ]; then
-                echo "Mode: KMS"
-                cosign verify \
-                  --key "azurekms://$(COSIGN_KV_KEY)" \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-signature.log
-              else
-                echo "Mode: keyless"
-                cosign verify \
-                  --certificate-oidc-issuer https://vstoken.dev.azure.com \
-                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/sdlc/_build" \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-signature.log
-              fi
-              echo "Signature verified in registry"
-            displayName: 'Verify 1/3: Image Signature'
-            env:
-              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
-              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
-              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
-
-          # Post-attest verification: confirm SBOM attestation is retrievable
-          - script: |
-              echo "Verifying SBOM attestation for digest: $(IMAGE_DIGEST)"
-              if [ -n "$(COSIGN_KV_KEY)" ]; then
-                echo "Mode: KMS"
-                cosign verify-attestation \
-                  --key "azurekms://$(COSIGN_KV_KEY)" \
-                  --type cyclonedx \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation-sbom.log
-              else
-                echo "Mode: keyless"
-                cosign verify-attestation \
-                  --certificate-oidc-issuer https://vstoken.dev.azure.com \
-                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/sdlc/_build" \
-                  --type cyclonedx \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation-sbom.log
-              fi
-              echo "SBOM attestation verified in registry"
-            displayName: 'Verify 2/3: SBOM Attestation (cyclonedx)'
-            env:
-              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
-              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
-              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
-
-          # Post-attest verification: confirm SLSA provenance is retrievable
-          - script: |
-              echo "Verifying SLSA provenance for digest: $(IMAGE_DIGEST)"
-              if [ -n "$(COSIGN_KV_KEY)" ]; then
-                echo "Mode: KMS"
-                cosign verify-attestation \
-                  --key "azurekms://$(COSIGN_KV_KEY)" \
-                  --type slsaprovenance \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation-slsa.log
-              else
-                echo "Mode: keyless"
-                cosign verify-attestation \
-                  --certificate-oidc-issuer https://vstoken.dev.azure.com \
-                  --certificate-identity-regexp "https://dev.azure.com/cuspofaries/sdlc/_build" \
-                  --type slsaprovenance \
-                  "$(IMAGE_DIGEST)" 2>&1 | tee output/verify/verify-attestation-slsa.log
-              fi
-              echo "SLSA provenance verified in registry"
-            displayName: 'Verify 3/3: SLSA Provenance (slsaprovenance)'
-            env:
-              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
-              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
-              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
-
-          # ── AIR-GAP — export bundles + SBOM as a portable archive ──
-          - script: |
-              ./scripts/airgap-export.sh \
-                "$(IMAGE_DIGEST)" \
-                output/sbom/image/sbom-image-trivy.json \
-                output/airgap
-            displayName: 'Create Air-Gap Package'
-            condition: and(succeeded(), eq('${{ parameters.airgap }}', 'true'))
-            env:
-              COSIGN_KMS_KEY: $(COSIGN_KV_KEY)
-              AZURE_TENANT_ID: $(AZURE_TENANT_ID)
-              AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
-              AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
-
-          - task: PublishBuildArtifacts@1
-            displayName: 'Publish Air-Gap Package'
-            condition: and(succeeded(), eq('${{ parameters.airgap }}', 'true'))
-            inputs:
-              PathtoPublish: 'output/airgap'
-              ArtifactName: 'airgap-package'
+          - template: templates/airgap.yml
+            parameters:
+              imageDigest: $(IMAGE_DIGEST)
+              cosignKvKey: $(COSIGN_KV_KEY)
+              airgap: ${{ parameters.airgap }}
 
           # Upload the attested SBOM to Dependency-Track for continuous monitoring.
           # Non-blocking: DTrack is governance/monitoring, not a CI gate.
@@ -487,9 +276,7 @@ stages:
         steps:
           - checkout: self
 
-          - script: |
-              sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.48.0 # renovate: datasource=github-releases depName=go-task/task
-            displayName: 'Install Task'
+          - template: templates/install-task.yml
 
           - script: sudo task install:trivy
             displayName: 'Install Trivy'
@@ -497,18 +284,7 @@ stages:
           - script: sudo task install:cosign
             displayName: 'Install Cosign'
 
-          # Login to Azure (needed for ACR access and KMS verification)
-          - task: AzureCLI@2
-            displayName: 'Azure Login'
-            inputs:
-              azureSubscription: 'azure-service-connection'
-              scriptType: bash
-              addSpnToEnvironment: true
-              scriptLocation: inlineScript
-              inlineScript: |
-                echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
-                echo "##vso[task.setvariable variable=AZURE_CLIENT_ID]$servicePrincipalId"
-                echo "##vso[task.setvariable variable=AZURE_CLIENT_SECRET;issecret=true]$servicePrincipalKey"
+          - template: templates/azure-login.yml
 
           - task: Docker@2
             displayName: 'Login to ACR'
@@ -656,7 +432,7 @@ stages:
 #    [ ] Creer un ACR : az acr create -n <name> -g <rg> --sku Basic
 #    [ ] Creer un Service Connection Docker dans Azure DevOps :
 #        Project Settings > Service connections > New > Docker Registry
-#        Nommer : "acr-service-connection" (ou adapter ligne ~129)
+#        Nommer : "acr-service-connection" (ou adapter dans templates/azure-login.yml)
 #
 # 2. VARIABLE GROUP "supply-chain"
 #    [ ] Pipelines > Library > + Variable group
@@ -682,7 +458,7 @@ stages:
 # 4. AZURE SERVICE CONNECTION (pour Key Vault + ACR)
 #    [ ] Project Settings > Service connections > New > Azure Resource Manager
 #        Type : Service Principal (automatic) ou Workload Identity Federation
-#        Nommer : "azure-service-connection" (ou adapter ligne ~116)
+#        Nommer : "azure-service-connection" (ou adapter dans templates/azure-login.yml)
 #        Scope : subscription ou resource group contenant le Key Vault + ACR
 #
 # 5. PIPELINE
@@ -693,7 +469,8 @@ stages:
 #
 # 6. ADAPTER (si besoin)
 #    [ ] IMAGE_NAME : changer "supply-chain-poc" (ligne ~37)
-#    [ ] Service connections : adapter les noms (lignes ~116 et ~129)
+#    [ ] Service connections : adapter les noms dans templates/azure-login.yml
+#    [ ] Identity regexp : adapter dans templates/verify.yml (parametre identityRegexp)
 #    [ ] Taskfile ./app : adapter le chemin si votre Dockerfile est ailleurs
 #
 # 7. VERIFICATION
