@@ -1,0 +1,37 @@
+# Step template: Sign image digest (KMS or keyless)
+parameters:
+  - name: imageDigest
+    type: string
+  - name: cosignKvKey
+    type: string
+  - name: airgap
+    type: string
+    default: 'false'
+
+steps:
+  - script: mkdir -p output/airgap
+    displayName: 'Prepare Air-Gap Bundle Directory'
+    condition: and(succeeded(), eq('${{ parameters.airgap }}', 'true'))
+
+  - script: |
+      BUNDLE_FLAG=""
+      if [ "$AIRGAP" = "True" ]; then
+        BUNDLE_FLAG="--bundle output/airgap/image-signature.bundle"
+      fi
+      echo "Signing digest: ${{ parameters.imageDigest }}"
+      if [ -n "${{ parameters.cosignKvKey }}" ]; then
+        echo "Mode: Azure Key Vault KMS"
+        cosign sign --yes \
+          --key "azurekms://${{ parameters.cosignKvKey }}" \
+          $BUNDLE_FLAG \
+          "${{ parameters.imageDigest }}"
+      else
+        echo "Mode: keyless (OIDC)"
+        cosign sign --yes $BUNDLE_FLAG "${{ parameters.imageDigest }}"
+      fi
+    displayName: 'Sign Image Digest'
+    env:
+      AIRGAP: ${{ parameters.airgap }}
+      AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+      AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+      AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)

@@ -1,0 +1,19 @@
+# Step template: Azure CLI login + export credentials for cosign KMS
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: 'azure-service-connection'
+
+steps:
+  - task: AzureCLI@2
+    displayName: 'Azure Login & Set Credentials'
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      addSpnToEnvironment: true
+      scriptLocation: inlineScript
+      inlineScript: |
+        # Export credentials for cosign to use Azure KMS
+        echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
+        echo "##vso[task.setvariable variable=AZURE_CLIENT_ID]$servicePrincipalId"
+        echo "##vso[task.setvariable variable=AZURE_CLIENT_SECRET;issecret=true]$servicePrincipalKey"

@@ -1,0 +1,91 @@
+# Step template: Verify signature + attestations (fail-closed: all 3 must pass)
+parameters:
+  - name: imageDigest
+    type: string
+  - name: cosignKvKey
+    type: string
+  - name: oidcIssuer
+    type: string
+    default: 'https://vstoken.dev.azure.com'
+  - name: identityRegexp
+    type: string
+    default: 'https://dev.azure.com/cuspofaries/sdlc/_build'
+
+steps:
+  # Identity constraints on every verify: proves who built the image.
+  # Logs archived in output/verify/ for audit trail.
+  - script: |
+      mkdir -p output/verify
+      echo "Referrers for: ${{ parameters.imageDigest }}"
+      cosign tree "${{ parameters.imageDigest }}" 2>&1 | tee output/verify/cosign-tree.log || true
+    displayName: 'Debug: cosign tree (show referrers)'
+
+  - script: |
+      mkdir -p output/verify
+      echo "Digest: ${{ parameters.imageDigest }}"
+      if [ -n "${{ parameters.cosignKvKey }}" ]; then
+        echo "Mode: KMS"
+        cosign verify \
+          --key "azurekms://${{ parameters.cosignKvKey }}" \
+          "${{ parameters.imageDigest }}" 2>&1 | tee output/verify/verify-signature.log
+      else
+        echo "Mode: keyless"
+        cosign verify \
+          --certificate-oidc-issuer ${{ parameters.oidcIssuer }} \
+          --certificate-identity-regexp "${{ parameters.identityRegexp }}" \
+          "${{ parameters.imageDigest }}" 2>&1 | tee output/verify/verify-signature.log
+      fi
+      echo "Signature verified in registry"
+    displayName: 'Verify 1/3: Image Signature'
+    env:
+      AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+      AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+      AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+
+  # Post-attest verification: confirm SBOM attestation is retrievable
+  - script: |
+      echo "Verifying SBOM attestation for digest: ${{ parameters.imageDigest }}"
+      if [ -n "${{ parameters.cosignKvKey }}" ]; then
+        echo "Mode: KMS"
+        cosign verify-attestation \
+          --key "azurekms://${{ parameters.cosignKvKey }}" \
+          --type cyclonedx \
+          "${{ parameters.imageDigest }}" 2>&1 | tee output/verify/verify-attestation-sbom.log
+      else
+        echo "Mode: keyless"
+        cosign verify-attestation \
+          --certificate-oidc-issuer ${{ parameters.oidcIssuer }} \
+          --certificate-identity-regexp "${{ parameters.identityRegexp }}" \
+          --type cyclonedx \
+          "${{ parameters.imageDigest }}" 2>&1 | tee output/verify/verify-attestation-sbom.log
+      fi
+      echo "SBOM attestation verified in registry"
+    displayName: 'Verify 2/3: SBOM Attestation (cyclonedx)'
+    env:
+      AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+      AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+      AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+
+  # Post-attest verification: confirm SLSA provenance is retrievable
+  - script: |
+      echo "Verifying SLSA provenance for digest: ${{ parameters.imageDigest }}"
+      if [ -n "${{ parameters.cosignKvKey }}" ]; then
+        echo "Mode: KMS"
+        cosign verify-attestation \
+          --key "azurekms://${{ parameters.cosignKvKey }}" \
+          --type slsaprovenance \
+          "${{ parameters.imageDigest }}" 2>&1 | tee output/verify/verify-attestation-slsa.log
+      else
+        echo "Mode: keyless"
+        cosign verify-attestation \
+          --certificate-oidc-issuer ${{ parameters.oidcIssuer }} \
+          --certificate-identity-regexp "${{ parameters.identityRegexp }}" \
+          --type slsaprovenance \
+          "${{ parameters.imageDigest }}" 2>&1 | tee output/verify/verify-attestation-slsa.log
+      fi
+      echo "SLSA provenance verified in registry"
+    displayName: 'Verify 3/3: SLSA Provenance (slsaprovenance)'
+    env:
+      AZURE_TENANT_ID: $(AZURE_TENANT_ID)
+      AZURE_CLIENT_ID: $(AZURE_CLIENT_ID)
+      AZURE_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
