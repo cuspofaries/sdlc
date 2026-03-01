@@ -310,6 +310,7 @@ tasks:
         echo "🔍 SAST scan: {{.SAST_CONTEXT}}"
         echo "   Config:   {{.SAST_CONFIG}}"
         echo "   Severity: {{.SAST_SEVERITY}}"
+        mkdir -p "${HOME}/.config/.semgrep"
         semgrep scan {{.SAST_CONTEXT}} \
           --config {{.SAST_CONFIG}} \
           --severity {{.SAST_SEVERITY}} \

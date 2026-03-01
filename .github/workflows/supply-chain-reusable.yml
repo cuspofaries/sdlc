@@ -253,7 +253,7 @@ jobs:
       - name: Scan source code (SAST — Semgrep)
         if: ${{ inputs.sast }}
         run: |
-          mkdir -p output/scans
+          mkdir -p output/scans "${HOME}/.config/.semgrep"
           echo "SAST scan: ${{ inputs.context }}"
           semgrep scan ${{ inputs.context }} \
             --config ${{ inputs.sast-config }} \
