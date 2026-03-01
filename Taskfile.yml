@@ -187,11 +187,7 @@ tasks:
     desc: "Install Semgrep {{.SEMGREP_VERSION}}"
     cmds:
       - |
-        python3 -m venv /opt/semgrep-venv
-        /opt/semgrep-venv/bin/pip install setuptools semgrep=={{.SEMGREP_VERSION}}
-        for bin in /opt/semgrep-venv/bin/semgrep /opt/semgrep-venv/bin/osemgrep /opt/semgrep-venv/bin/pysemgrep; do
-          [ -f "$bin" ] && ln -sf "$bin" /usr/local/bin/$(basename "$bin")
-        done
+        pipx install semgrep=={{.SEMGREP_VERSION}}
         semgrep --version || { echo "❌ semgrep not functional"; exit 1; }
         echo "✅ Semgrep {{.SEMGREP_VERSION}} installed"
     status:
