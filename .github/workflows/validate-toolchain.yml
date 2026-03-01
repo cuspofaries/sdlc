@@ -64,14 +64,16 @@ jobs:
 
           # Convert to JSON and test OPA deny fires on expired exception
           EXCEPTIONS_JSON=$(mktemp)
+          EMPTY_INPUT=$(mktemp)
+          echo '{}' > "$EMPTY_INPUT"
           yq -o json /tmp/test-exceptions.yaml > "$EXCEPTIONS_JSON"
           DENY_RESULT=$(opa eval \
             -d policies/ \
             --data "$EXCEPTIONS_JSON" \
-            -i /dev/null \
+            -i "$EMPTY_INPUT" \
             'data.sbom.deny' \
-            --format raw 2>/dev/null || echo "[]")
-          rm -f "$EXCEPTIONS_JSON"
+            --format raw 2>&1 || echo "[]")
+          rm -f "$EXCEPTIONS_JSON" "$EMPTY_INPUT"
 
           echo "Deny result: $DENY_RESULT"
           if echo "$DENY_RESULT" | grep -q "EXPIRED"; then
