@@ -238,7 +238,7 @@ jobs:
 
       - name: Install Semgrep
         if: ${{ inputs.sast }}
-        run: pipx install semgrep
+        run: pip install --break-system-packages semgrep
 
       - name: Scan source code (SAST — Semgrep)
         if: ${{ inputs.sast }}

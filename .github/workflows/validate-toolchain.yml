@@ -106,7 +106,7 @@ jobs:
   # WHAT THIS TESTS (same tasks as `task pipeline`):
   #   Phase 1: task build
   #   Phase 2: task sbom:generate → task sbom:scan (exit-code=1!) →
-  #            task sbom:scan:sbom → task sbom:policy
+  #            task sast:scan → task sbom:scan:sbom → task sbom:policy
   #   Phase 3: task push → task image:sign → task sbom:attest →
   #            task sbom:attest:verify
   #   + Extra assertions: SBOM structure, ImageID alignment, SHA256 invariant
@@ -200,6 +200,9 @@ jobs:
       # base image, don't relax the test.
       - name: "Phase 2: Scan vulnerabilities (trivy image — fail-closed)"
         run: task sbom:scan IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
+
+      - name: "Phase 2: SAST scan (Semgrep — fail-closed)"
+        run: task sast:scan
 
       - name: "Phase 2: Scan SBOM (trivy sbom — governance)"
         run: task sbom:scan:sbom IMAGE_NAME=sdlc-e2e-test IMAGE_TAG=test REGISTRY=localhost:5000
