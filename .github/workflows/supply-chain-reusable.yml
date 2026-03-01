@@ -240,7 +240,7 @@ jobs:
         if: ${{ inputs.sast }}
         run: |
           python3 -m venv /opt/semgrep-venv
-          /opt/semgrep-venv/bin/pip install semgrep
+          /opt/semgrep-venv/bin/pip install setuptools semgrep
           for bin in /opt/semgrep-venv/bin/semgrep /opt/semgrep-venv/bin/osemgrep /opt/semgrep-venv/bin/pysemgrep; do
             [ -f "$bin" ] && sudo ln -sf "$bin" /usr/local/bin/$(basename "$bin")
           done

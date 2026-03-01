@@ -188,7 +188,7 @@ tasks:
     cmds:
       - |
         python3 -m venv /opt/semgrep-venv
-        /opt/semgrep-venv/bin/pip install semgrep=={{.SEMGREP_VERSION}}
+        /opt/semgrep-venv/bin/pip install setuptools semgrep=={{.SEMGREP_VERSION}}
         for bin in /opt/semgrep-venv/bin/semgrep /opt/semgrep-venv/bin/osemgrep /opt/semgrep-venv/bin/pysemgrep; do
           [ -f "$bin" ] && ln -sf "$bin" /usr/local/bin/$(basename "$bin")
         done
