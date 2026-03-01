@@ -3,7 +3,7 @@ version: '3'
 # ============================================================================
 # SDLC - Unified Supply Chain Security Toolchain
 # ============================================================================
-# Shift-left pipeline: build -> analyze -> publish
+# Shift-left pipeline: SAST + build (parallel) -> analyze -> publish
 #
 # Usage:
 #   task install               → Install all tools
@@ -89,7 +89,7 @@ tasks:
   # ==========================================================================
 
   install:
-    desc: "Install all SBOM tools"
+    desc: "Install all supply chain tools"
     cmds:
       - task: install:trivy
       - task: install:cosign

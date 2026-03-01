@@ -1,7 +1,7 @@
 # =============================================================================
 # Azure DevOps - Unified Supply Chain Security Pipeline
 # =============================================================================
-# Shift-left approach: build → analyze (GATE) → publish
+# Shift-left approach: SAST + build → analyze (GATE) → publish
 # Calls the SAME Taskfile targets as GitHub Actions.
 #
 # Signing strategy:
@@ -70,9 +70,9 @@ stages:
 
           - template: templates/install-task.yml
 
-          # Install SBOM toolchain
+          # Install supply chain toolchain
           - script: sudo task install
-            displayName: 'Install SBOM Tools'
+            displayName: 'Install Supply Chain Tools'
 
           # PHASE 1 — SAST + Build
           # SAST runs first: it only needs source code, not the image.

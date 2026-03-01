@@ -146,13 +146,20 @@ cosign verify-attestation --key azurekms://<vault>.vault.azure.net/<key> \
 
 ## 11. SAST (Semgrep)
 
-`task sast:scan` est integre au pipeline (entre `sbom:scan` et `sbom:policy`). Il utilise Semgrep pour analyser le code source.
+`task sast:scan` est integre au pipeline en **Phase 1** (avant le build). Il utilise l'image Docker officielle `returntocorp/semgrep` pour analyser le code source — aucune installation Python requise, Docker suffit.
+
+**Pourquoi en Phase 1 :** le SAST n'a besoin que du code source, pas de l'image construite. En l'executant avant le build (ou en parallele dans le Taskfile), on echoue plus tot si le code contient des vulnerabilites (fail-fast).
 
 | Variable | Defaut | Description |
 |----------|--------|-------------|
 | `SAST_CONFIG` | `p/owasp-top-ten` | Ruleset Semgrep (ou chemin vers `.semgrep.yml`) |
 | `SAST_SEVERITY` | `ERROR` | Severite minimale (`ERROR`, `WARNING`, `INFO`) |
 | `SAST_CONTEXT` | `./app` | Repertoire a scanner |
+| `SEMGREP_VERSION` | `1.102.0` | Version de l'image Docker Semgrep |
+
+**Flux d'execution :**
+- **Taskfile** (`task pipeline`) : `build` et `sast:scan` s'executent **en parallele** via `deps:`
+- **GitHub Actions / ADO** : `sast:scan` s'execute **avant** le build (fail-fast)
 
 Le repo consommateur peut surcharger avec :
 - `.semgrep.yml` pour des regles custom → passer `SAST_CONFIG=".semgrep.yml"` ou `sast-config: ".semgrep.yml"` (GitHub Actions)
