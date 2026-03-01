@@ -37,7 +37,7 @@ Le pipeline genere ces bundles automatiquement quand `AIRGAP_DIR` est configure.
 ┌──────────────────────────────────────────────────┐
 │  AZURE DEVOPS (internet)                         │
 │                                                  │
-│  build → scan → policy → push → sign → attest    │
+│  SAST → build → scan → policy → push → sign → attest │
 │                           │       │       │      │
 │                           │     bundle  bundle   │
 │                           │       │       │      │
@@ -82,7 +82,7 @@ Le pipeline genere ces bundles automatiquement quand `AIRGAP_DIR` est configure.
 task pipeline AIRGAP_DIR=output/airgap
 ```
 
-Ceci execute le pipeline normal (build → scan → policy → push → sign → attest → verify) et genere en plus :
+Ceci execute le pipeline normal (SAST + build → scan → policy → push → sign → attest → verify) et genere en plus :
 - `output/airgap/image-signature.bundle`
 - `output/airgap/sbom-attestation.bundle`
 - `output/airgap/slsa-attestation.bundle`

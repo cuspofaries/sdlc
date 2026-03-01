@@ -1,7 +1,7 @@
 # SDLC — Toolchain Unifié de Sécurité Supply Chain
 
-> **Plateforme réutilisable** pour le build d'images conteneur, la génération SBOM, le scan de vulnérabilités, l'application de politiques, la signature et le monitoring.
-> Approche shift-left : scanner **avant** de publier. Ordre strict : **build → analyse → GATE → publication**.
+> **Plateforme réutilisable** pour le build d'images conteneur, le SAST, la génération SBOM, le scan de vulnérabilités, l'application de politiques, la signature et le monitoring.
+> Approche shift-left : scanner **avant** de publier. Ordre strict : **SAST + build → analyse → GATE → publication**.
 
 [![Validate Toolchain](https://github.com/cuspofaries/sdlc/actions/workflows/validate-toolchain.yml/badge.svg)](https://github.com/cuspofaries/sdlc/actions/workflows/validate-toolchain.yml)
 
@@ -9,27 +9,28 @@
 
 ## Pipeline — Checklist des etapes
 
-### PHASE 1 — BUILD (rien ne sort du runner)
+### PHASE 1 — SAST + BUILD (rien ne sort du runner)
 
 | # | Etape | Outil | Explication |
 |---|-------|-------|-------------|
 | 1 | **Checkout code** | `actions/checkout` | Clone le repo applicatif (Dockerfile, code source, policies custom). |
 | 2 | **Checkout toolchain** | `actions/checkout` | Clone le repo `sdlc` dans `.sdlc/` pour acceder aux policies baseline et aux scripts. |
-| 3 | **Build image** | `docker/build-push-action` | Construit l'image conteneur **localement** (`load: true`, `push: false`). Rien ne quitte le runner a ce stade. |
+| 3 | **Scan SAST** | `returntocorp/semgrep` (Docker) | Scanne le code source pour les vulnerabilites de securite (OWASP Top 10) via Semgrep. S'execute **avant** le build : n'a besoin que du code source, pas de l'image. Fail-fast : bloque le pipeline si des findings sont detectes. Dans le Taskfile, s'execute **en parallele** avec le build via `deps:`. |
+| 4 | **Build image** | `docker/build-push-action` | Construit l'image conteneur **localement** (`load: true`, `push: false`). Rien ne quitte le runner a ce stade. |
 
 ### PHASE 2 — ANALYZE (sur l'image locale, avant toute publication)
 
 | # | Etape | Outil | Explication |
 |---|-------|-------|-------------|
-| 4 | **Generer le SBOM** | `trivy image --format cyclonedx` | Scanne l'image locale et produit un inventaire complet (OS packages, librairies, versions, licences) au format CycloneDX JSON. Le hash SHA256 du fichier SBOM et l'identifiant de l'image (`aquasecurity:trivy:ImageID`) sont enregistres a ce stade pour verification d'integrite avant attestation. |
-| 5 | **Verifier alignement image-SBOM** | `docker inspect` + `jq` | Compare l'identifiant reel de l'image Docker avec celui embarque dans le SBOM. S'ils different, le pipeline s'arrete immediatement — le SBOM doit decrire exactement l'image construite. |
-| 6 | **Scanner les vulnerabilites** | `trivy image --exit-code` | Scanne l'image **directement** (pas le SBOM) pour les CVE de severite HIGH et CRITICAL. Utilise `--exit-code 1` pour bloquer ou `0` pour avertir sans bloquer. C'est le **gate de securite** : plus fiable que scanner le SBOM car Trivy accede aux metadonnees du systeme de fichiers. |
-| 7 | **Scanner le SBOM** | `trivy sbom --exit-code 0` | Scanne le SBOM lui-meme pour les vulnerabilites (consultatif, **non bloquant**). Garantit que le SBOM atteste a ete verifie : ce qu'on signe = ce qu'on a scanne. Tout delta avec l'etape 6 revele des lacunes dans l'inventaire du SBOM. Les resultats sont archives quel que soit le code de sortie. |
-| 8 | **Evaluer les politiques OPA** | `opa eval` | Evalue le SBOM contre des regles Rego en deux niveaux : **deny** (bloquant — fait echouer le pipeline) et **warn** (consultatif — affiche un avertissement). Les politiques baseline (`sdlc/policies/`) sont automatiquement fusionnees avec les politiques custom du repo applicatif (`policies/`) si elles existent. Exemples de regles : packages bloques (supply chain attacks connus), composants sans version, licences non approuvees. |
+| 5 | **Generer le SBOM** | `trivy image --format cyclonedx` | Scanne l'image locale et produit un inventaire complet (OS packages, librairies, versions, licences) au format CycloneDX JSON. Le hash SHA256 du fichier SBOM et l'identifiant de l'image (`aquasecurity:trivy:ImageID`) sont enregistres a ce stade pour verification d'integrite avant attestation. |
+| 6 | **Verifier alignement image-SBOM** | `docker inspect` + `jq` | Compare l'identifiant reel de l'image Docker avec celui embarque dans le SBOM. S'ils different, le pipeline s'arrete immediatement — le SBOM doit decrire exactement l'image construite. |
+| 7 | **Scanner les vulnerabilites** | `trivy image --exit-code` | Scanne l'image **directement** (pas le SBOM) pour les CVE de severite HIGH et CRITICAL. Utilise `--exit-code 1` pour bloquer ou `0` pour avertir sans bloquer. C'est le **gate de securite** : plus fiable que scanner le SBOM car Trivy accede aux metadonnees du systeme de fichiers. |
+| 8 | **Scanner le SBOM** | `trivy sbom --exit-code 0` | Scanne le SBOM lui-meme pour les vulnerabilites (consultatif, **non bloquant**). Garantit que le SBOM atteste a ete verifie : ce qu'on signe = ce qu'on a scanne. Tout delta avec l'etape 6 revele des lacunes dans l'inventaire du SBOM. Les resultats sont archives quel que soit le code de sortie. |
+| 9 | **Evaluer les politiques OPA** | `opa eval` | Evalue le SBOM contre des regles Rego en deux niveaux : **deny** (bloquant — fait echouer le pipeline) et **warn** (consultatif — affiche un avertissement). Les politiques baseline (`sdlc/policies/`) sont automatiquement fusionnees avec les politiques custom du repo applicatif (`policies/`) si elles existent. Exemples de regles : packages bloques (supply chain attacks connus), composants sans version, licences non approuvees. |
 
 ```
 ══════════════════════════════════════════════════════
-  GATE : si l'etape 5, 6 ou 8 echoue → PIPELINE STOP
+  GATE : si l'etape 3, 7 ou 9 echoue → PIPELINE STOP
   Rien n'est publie. L'image reste locale.
 ══════════════════════════════════════════════════════
 ```
@@ -38,15 +39,15 @@
 
 | # | Etape | Outil | Explication |
 |---|-------|-------|-------------|
-| 9 | **Login au registry** | `docker/login-action` | S'authentifie au registry conteneur (GHCR, ACR, etc.) avec le token fourni. |
-| 10 | **Push de l'image** | `docker push` | Pousse l'image vers le registry. A ce stade, on sait qu'elle a passe le scan et les politiques. |
-| 11 | **Resoudre le digest registry** | `docker inspect` | Recupere le **RepoDigest** (`sha256:...`) du registry apres push. Toutes les operations de signature et d'attestation ciblent ce digest immutable, pas le tag mutable. |
-| 12 | **Verifier l'integrite du SBOM** | `sha256sum` | Recalcule le SHA256 du fichier SBOM et le compare au hash enregistre a la generation (etape 4). Si le fichier a ete modifie entre la generation et l'attestation, le pipeline s'arrete. |
-| 13 | **Signer le digest** | `cosign sign --yes` | Signe le **digest registry** (pas le tag) avec Cosign. GitHub Actions utilise le mode **keyless** (OIDC via Sigstore). Azure DevOps utilise **Azure Key Vault KMS** (`azurekms://`) en methode principale avec keyless en fallback. La signature prouve que l'image a ete produite par cette pipeline CI/CD et n'a pas ete alteree. |
-| 14 | **Attester le SBOM** | `cosign attest --type cyclonedx` | Lie cryptographiquement le SBOM au **digest registry** via une attestation In-Toto. Le SBOM atteste est exactement le fichier genere a l'etape 4 — jamais regenere ni modifie (verifie par l'etape 12). C'est la **garantie la plus forte** : elle prouve que CE SBOM decrit exactement CETTE image. |
-| 15 | **Attester la provenance SLSA** | `actions/attest-build-provenance` | Genere et atteste un predicat de provenance [SLSA](https://slsa.dev/) au digest de l'image. Enregistre l'identite du builder, le repo source, la revision et les metadonnees de build. Sur GitHub Actions, utilise l'action native d'attestation ; sur Azure DevOps et en local, un predicat cosign est utilise via `scripts/slsa-provenance.sh`. |
-| 16 | **Verifier tout dans le registry (fail-closed)** | `cosign verify` + `cosign verify-attestation` x2 | **Fail-closed** : verifie les trois artefacts (signature, attestation SBOM, provenance SLSA) sur le meme digest `image@sha256:...`. Si **l'un** manque ou est invalide, le pipeline s'arrete. Les contraintes d'identite (`--certificate-oidc-issuer` + `--certificate-identity-regexp`) sont appliquees sur chaque verification — y compris la provenance SLSA, qui prouve qui a construit l'image. `cosign tree` est execute en debug pour montrer les referrers. Tous les logs sont archives dans `output/verify/` pour audit. |
-| 17 | **Upload vers Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Envoie le SBOM atteste a Dependency-Track pour le monitoring continu, lie au **digest registry** (pas le SHA git). **Non bloquant** (`continue-on-error`) : DTrack est de la gouvernance/monitoring, pas un gate CI. Si DTrack est indisponible, l'image signee est quand meme deployable. Etape optionnelle (ignoree si `dtrack-hostname` est vide). |
+| 10 | **Login au registry** | `docker/login-action` | S'authentifie au registry conteneur (GHCR, ACR, etc.) avec le token fourni. |
+| 11 | **Push de l'image** | `docker push` | Pousse l'image vers le registry. A ce stade, on sait qu'elle a passe le scan et les politiques. |
+| 12 | **Resoudre le digest registry** | `docker inspect` | Recupere le **RepoDigest** (`sha256:...`) du registry apres push. Toutes les operations de signature et d'attestation ciblent ce digest immutable, pas le tag mutable. |
+| 13 | **Verifier l'integrite du SBOM** | `sha256sum` | Recalcule le SHA256 du fichier SBOM et le compare au hash enregistre a la generation (etape 5). Si le fichier a ete modifie entre la generation et l'attestation, le pipeline s'arrete. |
+| 14 | **Signer le digest** | `cosign sign --yes` | Signe le **digest registry** (pas le tag) avec Cosign. GitHub Actions utilise le mode **keyless** (OIDC via Sigstore). Azure DevOps utilise **Azure Key Vault KMS** (`azurekms://`) en methode principale avec keyless en fallback. La signature prouve que l'image a ete produite par cette pipeline CI/CD et n'a pas ete alteree. |
+| 15 | **Attester le SBOM** | `cosign attest --type cyclonedx` | Lie cryptographiquement le SBOM au **digest registry** via une attestation In-Toto. Le SBOM atteste est exactement le fichier genere a l'etape 5 — jamais regenere ni modifie (verifie par l'etape 13). C'est la **garantie la plus forte** : elle prouve que CE SBOM decrit exactement CETTE image. |
+| 16 | **Attester la provenance SLSA** | `actions/attest-build-provenance` | Genere et atteste un predicat de provenance [SLSA](https://slsa.dev/) au digest de l'image. Enregistre l'identite du builder, le repo source, la revision et les metadonnees de build. Sur GitHub Actions, utilise l'action native d'attestation ; sur Azure DevOps et en local, un predicat cosign est utilise via `scripts/slsa-provenance.sh`. |
+| 17 | **Verifier tout dans le registry (fail-closed)** | `cosign verify` + `cosign verify-attestation` x2 | **Fail-closed** : verifie les trois artefacts (signature, attestation SBOM, provenance SLSA) sur le meme digest `image@sha256:...`. Si **l'un** manque ou est invalide, le pipeline s'arrete. Les contraintes d'identite (`--certificate-oidc-issuer` + `--certificate-identity-regexp`) sont appliquees sur chaque verification — y compris la provenance SLSA, qui prouve qui a construit l'image. `cosign tree` est execute en debug pour montrer les referrers. Tous les logs sont archives dans `output/verify/` pour audit. |
+| 18 | **Upload vers Dependency-Track** | `DependencyTrack/gh-upload-sbom` | Envoie le SBOM atteste a Dependency-Track pour le monitoring continu, lie au **digest registry** (pas le SHA git). **Non bloquant** (`continue-on-error`) : DTrack est de la gouvernance/monitoring, pas un gate CI. Si DTrack est indisponible, l'image signee est quand meme deployable. Etape optionnelle (ignoree si `dtrack-hostname` est vide). |
 
 ### Resume visuel
 
@@ -54,54 +55,61 @@
   Code + Dockerfile
         |
         v
-  [1-3] BUILD ──────────────> Image locale
+  [1-2] CHECKOUT ────────────> Code source + toolchain
         |
         v
-  [4]   SBOM ──────────────> sbom-image-trivy.json + SHA256 + ImageID
-        |
-        v
-  [5]   IMAGE ↔ SBOM ─────> ImageID identique ?
-        |                         |
-        | OK                      | ECART → STOP
-        v
-  [6]   SCAN (trivy image) ─> Vulnerabilites HIGH/CRITICAL ?
+  [3]   SAST (Semgrep) ─────> Findings de securite ?
         |                         |
         | OK                      | FAIL → STOP
         v
-  [7]   SCAN SBOM (trivy sbom) ─> Consultatif (gouvernance, archive)
+  [4]   BUILD ──────────────> Image locale
         |
         v
-  [8]   POLICY (OPA) ──────> deny / warn ?
+  [5]   SBOM ──────────────> sbom-image-trivy.json + SHA256 + ImageID
+        |
+        v
+  [6]   IMAGE ↔ SBOM ─────> ImageID identique ?
+        |                         |
+        | OK                      | ECART → STOP
+        v
+  [7]   SCAN (trivy image) ─> Vulnerabilites HIGH/CRITICAL ?
+        |                         |
+        | OK                      | FAIL → STOP
+        v
+  [8]   SCAN SBOM (trivy sbom) ─> Consultatif (gouvernance, archive)
+        |
+        v
+  [9]   POLICY (OPA) ──────> deny / warn ?
         |                         |
         | OK                      | FAIL → STOP
         v
   ═══ GATE PASSED ═══
         |
         v
-  [9-10] PUSH ─────────────> Image dans le registry
+  [10-11] PUSH ────────────> Image dans le registry
         |
         v
-  [11]  RESOLVE DIGEST ────> RepoDigest (sha256:...)
+  [12]  RESOLVE DIGEST ────> RepoDigest (sha256:...)
         |
         v
-  [12]  VERIF SHA256 SBOM ──> Intact depuis etape 4 ?
+  [13]  VERIF SHA256 SBOM ──> Intact depuis etape 5 ?
         |                         |
         | OK                      | MODIFIE → STOP
         v
-  [13]  SIGN ──────────────> Signature Cosign sur digest
+  [14]  SIGN ──────────────> Signature Cosign sur digest
         |
         v
-  [14]  ATTEST SBOM ───────> SBOM lie au digest (In-Toto)
+  [15]  ATTEST SBOM ───────> SBOM lie au digest (In-Toto)
         |
         v
-  [15]  ATTEST SLSA ───────> Provenance de build liee au digest
+  [16]  ATTEST SLSA ───────> Provenance de build liee au digest
         |
         v
-  [16]  VERIFY ────────────> Signature + attestation dans le registry ?
+  [17]  VERIFY ────────────> Signature + attestation dans le registry ?
         |                         |
         | OK                      | FAIL → STOP
         v
-  [17]  DTRACK ────────────> Monitoring (non bloquant, lie au digest)
+  [18]  DTRACK ────────────> Monitoring (non bloquant, lie au digest)
 ```
 
 ---
@@ -257,7 +265,7 @@ Le pipeline est implemente sur trois plateformes avec le **meme flux logique** :
 | **Azure DevOps** | `azure-pipelines/pipeline.yml` | Multi-stage (BuildAndAnalyze → Publish → DailyRescan) |
 | **Local / tout CI** | `Taskfile.yml` + `scripts/` | Tasks portables, appelees par GH et ADO |
 
-Les trois partagent le meme ordre (build → analyse → gate → publication), les memes outils (Trivy, Cosign, OPA), la meme priorite de signature (KMS > keyless CI > keypair), et les memes invariants (integrite SBOM, signature sur digest uniquement, verification post-publication). Quand un mecanisme est ajoute a l'un, il est ajoute aux trois. Le workflow `validate-toolchain.yml` inclut un **test end-to-end** (job `e2e-test`) qui construit une image de test, genere le SBOM, execute tous les scans et verifications de politique, verifie l'invariant d'integrite SBOM, puis signe, atteste et verifie avec un registry local. Cela detecte les regressions d'integration que des verifications unitaires ne detecteraient pas.
+Les trois partagent le meme ordre (SAST + build → analyse → gate → publication), les memes outils (Semgrep, Trivy, Cosign, OPA), la meme priorite de signature (KMS > keyless CI > keypair), et les memes invariants (integrite SBOM, signature sur digest uniquement, verification post-publication). Quand un mecanisme est ajoute a l'un, il est ajoute aux trois. Le workflow `validate-toolchain.yml` inclut un **test end-to-end** (job `e2e-test`) qui scanne le code source (SAST), construit une image de test, genere le SBOM, execute tous les scans et verifications de politique, verifie l'invariant d'integrite SBOM, puis signe, atteste et verifie avec un registry local. Cela detecte les regressions d'integration que des verifications unitaires ne detecteraient pas.
 
 **Philosophie e2e : aussi strict que la prod, fail-closed.** Le e2e execute les memes tasks Taskfile avec les memes defaults — pas de `TRIVY_EXIT_CODE=0`, pas de `--ignore-unfixed`, pas de regexp d'identite relachee. Si l'image de test a des CVEs HIGH/CRITICAL, le e2e echoue ; on corrige l'image de base, on ne relaxe pas le test.
 
@@ -387,7 +395,7 @@ Ce pipeline fournit les garanties verifiables suivantes :
 
 | Garantie | Mecanisme | Mode d'echec |
 |----------|-----------|-------------|
-| **Rien n'est publie sans scan** | Shift-left : build → analyse → GATE → publication | Le pipeline s'arrete au gate |
+| **Rien n'est publie sans scan** | Shift-left : SAST + build → analyse → GATE → publication | Le pipeline s'arrete au gate |
 | **Le SBOM decrit l'image exacte** | Verification croisee ImageID (etape 5) | `FATAL: Image ID mismatch` |
 | **Le SBOM n'a pas ete modifie apres le scan** | SHA256 enregistre a la generation, verifie avant attestation (etape 12) | `FATAL: SBOM was modified` |
 | **Meme binaire entre les stages** (ADO) | `docker save` → artifact → `docker load` + verification ImageID | `Loaded image does not match SBOM` |
@@ -403,7 +411,8 @@ Ce pipeline fournit les garanties verifiables suivantes :
 | **Les packages dangereux connus sont bloques** | Regles OPA `deny` (baseline + custom) | `POLICY CHECK FAILED` |
 | **Les licences copyleft sont detectees** | OPA `deny` pour GPL/AGPL/SSPL dans les librairies applicatives (warn pour packages OS) | `Copyleft license ... incompatible` |
 | **Les specs SBOM obsoletes sont rejetees** | OPA `deny` pour CycloneDX < 1.4 | `spec version too old` |
-| **La chaine pipeline est testee end-to-end** | Job `e2e-test` : build → SBOM → scan → policy → sign → attest → verify | La CI echoue sur toute etape cassee |
+| **Le code source est scanne pour les vulnerabilites** | SAST (Semgrep) s'execute avant le build — fail-fast sur les findings OWASP | `SAST scan failed` |
+| **La chaine pipeline est testee end-to-end** | Job `e2e-test` : SAST → build → SBOM → scan → policy → sign → attest → verify | La CI echoue sur toute etape cassee |
 | **Les nouvelles CVE sont detectees post-deploiement** | DailyRescan extrait le SBOM depuis l'attestation, rescanne avec les donnees fraiches | Consultatif (non bloquant) |
 | **Un echec DTrack ne bloque pas la livraison** | `continue-on-error: true`, lie au digest | L'image signee est livree quoi qu'il arrive |
 
@@ -536,7 +545,7 @@ task pipeline:local \
   CONTEXT=../my-app-repo/app
 ```
 
-Exécute **build → generate → scan → policy** sans push ni signature.
+Exécute **SAST + build → generate → scan → policy** sans push ni signature.
 
 ### Pipeline complet (avec publication)
 
@@ -553,9 +562,10 @@ task pipeline \
 
 | Task | Description |
 |------|-------------|
-| `install` | Installer tous les outils (trivy, cosign, cdxgen, opa, oras) |
+| `install` | Installer tous les outils supply chain (trivy, cosign, cdxgen, opa, oras, yq) |
 | `install:verify` | Afficher les versions installées |
 | `build` | Build image locale (pas de push) |
+| `sast:scan` | Scanner le code source pour les vulnerabilites (Semgrep via Docker) |
 | `sbom:generate` | Générer le SBOM image (CycloneDX) |
 | `sbom:generate:source` | Générer le SBOM source (dépendances déclarées) |
 | `sbom:scan` | Scanner l'image pour les vulnérabilités (trivy image — gate sécurité) |
@@ -577,8 +587,8 @@ task pipeline \
 | `sbom:tamper:test` | Démo de détection de falsification SBOM |
 | `airgap:export` | Packager l'image signee + bundles cosign pour deploiement air-gap |
 | `airgap:verify` | Verifier signature + attestations depuis le package air-gap (offline) |
-| `pipeline` | Pipeline complet (build → analyse → publication) |
-| `pipeline:local` | Pipeline local (build → analyse uniquement) |
+| `pipeline` | Pipeline complet (SAST + build → analyse → publication) |
+| `pipeline:local` | Pipeline local (SAST + build → analyse uniquement) |
 | `dtrack:up` | Démarrer Dependency-Track local |
 | `dtrack:down` | Arrêter Dependency-Track local |
 | `clean` | Supprimer les fichiers générés |

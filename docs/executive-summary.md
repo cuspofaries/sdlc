@@ -30,7 +30,7 @@ Une pipeline automatisee, prete pour la production, qui securise la supply chain
 
 | Garantie | Mecanisme technique | Preuve d'audit |
 |----------|--------------------|--------------------|
-| **Aucun logiciel vulnerable deploye** | Scan HIGH/CRITICAL bloque le pipeline avant publication | `trivy-scan-results.json` dans les CI artifacts |
+| **Aucun logiciel vulnerable deploye** | SAST (code source) + SCA (dependances) bloquent le pipeline avant publication | `scan-sast.json` + `trivy-scan-results.json` dans les CI artifacts |
 | **Inventaire logiciel complet** | SBOM (CycloneDX) genere et lie cryptographiquement a l'image | Attestation cosign dans le registry (`cosign verify-attestation`) |
 | **Integrite du SBOM** | Verification SHA256 + ImageID empeche toute modification | `sbom-sha256.txt` enregistre a la generation, re-verifie avant attestation |
 | **Packages dangereux bloques** | Regles OPA (attaques supply chain, licences copyleft, versions manquantes) | `opa-results.json` montrant les regles deny/warn appliquees |
