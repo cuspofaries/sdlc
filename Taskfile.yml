@@ -68,7 +68,7 @@ vars:
   OPA_VERSION: 'v1.13.1'    # renovate: datasource=github-releases depName=open-policy-agent/opa
   ORAS_VERSION: '1.3.0'     # renovate: datasource=github-releases depName=oras-project/oras
   YQ_VERSION: 'v4.52.4'     # renovate: datasource=github-releases depName=mikefarah/yq
-  SEMGREP_VERSION: '1.102.0'  # renovate: datasource=pypi depName=semgrep
+  SEMGREP_VERSION: '1.102.0'  # renovate: datasource=docker depName=returntocorp/semgrep
   # Azure Key Vault KMS (recommended for enterprise)
   # Example: myorgvault.vault.azure.net/cosign-key
   COSIGN_KMS_KEY: '{{.COSIGN_KMS_KEY | default ""}}'
@@ -97,7 +97,6 @@ tasks:
       - task: install:opa
       - task: install:oras
       - task: install:yq
-      - task: install:semgrep
       - echo "✅ All tools installed"
       - task: install:verify
 
@@ -183,30 +182,6 @@ tasks:
     status:
       - which yq
 
-  install:semgrep:
-    desc: "Install Semgrep {{.SEMGREP_VERSION}}"
-    cmds:
-      - |
-        python3 -m venv --system-site-packages /opt/semgrep-venv
-        /opt/semgrep-venv/bin/pip install setuptools semgrep=={{.SEMGREP_VERSION}}
-        cat > /usr/local/bin/semgrep <<'WRAPPER'
-        #!/bin/bash
-        exec /opt/semgrep-venv/bin/semgrep "$@"
-        WRAPPER
-        chmod +x /usr/local/bin/semgrep
-        cat > /usr/local/bin/pysemgrep <<'WRAPPER'
-        #!/bin/bash
-        exec /opt/semgrep-venv/bin/pysemgrep "$@"
-        WRAPPER
-        chmod +x /usr/local/bin/pysemgrep
-        if [ -f /opt/semgrep-venv/bin/osemgrep ]; then
-          ln -sf /opt/semgrep-venv/bin/osemgrep /usr/local/bin/osemgrep
-        fi
-        TMPSG=$(mktemp -d) && SEMGREP_SETTINGS_FILE="$TMPSG/s.yml" semgrep --version && rm -rf "$TMPSG" || { echo "❌ semgrep not functional"; exit 1; }
-        echo "✅ Semgrep {{.SEMGREP_VERSION}} installed"
-    status:
-      - which semgrep
-
   install:verify:
     desc: "Verify all tools are installed"
     cmds:
@@ -218,7 +193,7 @@ tasks:
         echo -n "opa:    " && opa version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
         echo -n "oras:   " && oras version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
         echo -n "yq:     " && yq --version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
-        echo -n "semgrep: " && TMPSG=$(mktemp -d) && SEMGREP_SETTINGS_FILE="$TMPSG/s.yml" semgrep --version 2>/dev/null && rm -rf "$TMPSG" || echo "❌ NOT INSTALLED"
+        echo -n "semgrep: " && docker image inspect "returntocorp/semgrep:{{.SEMGREP_VERSION}}" >/dev/null 2>&1 && echo "{{.SEMGREP_VERSION}} (docker)" || echo "will pull on first scan"
 
   # ==========================================================================
   # PHASE 1 - BUILD
@@ -310,12 +285,15 @@ tasks:
         echo "🔍 SAST scan: {{.SAST_CONTEXT}}"
         echo "   Config:   {{.SAST_CONFIG}}"
         echo "   Severity: {{.SAST_SEVERITY}}"
-        mkdir -p "${HOME}/.config/.semgrep"
-        semgrep scan {{.SAST_CONTEXT}} \
-          --config {{.SAST_CONFIG}} \
-          --severity {{.SAST_SEVERITY}} \
-          --json --json-output={{.SCAN_DIR}}/scan-sast.json \
-          --error
+        docker run --rm \
+          -v "$(pwd)/{{.SAST_CONTEXT}}:/src" \
+          -v "$(pwd)/{{.SCAN_DIR}}:/out" \
+          returntocorp/semgrep:{{.SEMGREP_VERSION}} \
+          semgrep scan /src \
+            --config {{.SAST_CONFIG}} \
+            --severity {{.SAST_SEVERITY}} \
+            --json --json-output=/out/scan-sast.json \
+            --error
         echo "✅ SAST scan passed → {{.SCAN_DIR}}/scan-sast.json"
 
   opa:test:

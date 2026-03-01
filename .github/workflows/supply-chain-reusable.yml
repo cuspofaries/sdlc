@@ -236,30 +236,21 @@ jobs:
             --output output/scans/scan-sbom-trivy.json
           echo "SBOM scan complete (advisory)"
 
-      - name: Install Semgrep
-        if: ${{ inputs.sast }}
-        run: |
-          python3 -m venv --system-site-packages /opt/semgrep-venv
-          /opt/semgrep-venv/bin/pip install setuptools semgrep
-          printf '#!/bin/bash\nexec /opt/semgrep-venv/bin/semgrep "$@"\n' | sudo tee /usr/local/bin/semgrep > /dev/null
-          sudo chmod +x /usr/local/bin/semgrep
-          printf '#!/bin/bash\nexec /opt/semgrep-venv/bin/pysemgrep "$@"\n' | sudo tee /usr/local/bin/pysemgrep > /dev/null
-          sudo chmod +x /usr/local/bin/pysemgrep
-          if [ -f /opt/semgrep-venv/bin/osemgrep ]; then
-            sudo ln -sf /opt/semgrep-venv/bin/osemgrep /usr/local/bin/osemgrep
-          fi
-          semgrep --version
-
       - name: Scan source code (SAST — Semgrep)
         if: ${{ inputs.sast }}
         run: |
-          mkdir -p output/scans "${HOME}/.config/.semgrep"
-          echo "SAST scan: ${{ inputs.context }}"
-          semgrep scan ${{ inputs.context }} \
-            --config ${{ inputs.sast-config }} \
-            --severity ${{ inputs.sast-severity }} \
-            --json --json-output=output/scans/scan-sast.json \
-            --error
+          SEMGREP_VERSION=$(grep 'SEMGREP_VERSION:' .sdlc/Taskfile.yml | head -1 | sed "s/.*'\(.*\)'.*/\1/")
+          mkdir -p output/scans
+          echo "SAST scan: ${{ inputs.context }} (semgrep:${SEMGREP_VERSION})"
+          docker run --rm \
+            -v "$(pwd)/${{ inputs.context }}:/src" \
+            -v "$(pwd)/output/scans:/out" \
+            "returntocorp/semgrep:${SEMGREP_VERSION}" \
+            semgrep scan /src \
+              --config ${{ inputs.sast-config }} \
+              --severity ${{ inputs.sast-severity }} \
+              --json --json-output=/out/scan-sast.json \
+              --error
           echo "SAST scan passed"
 
       - name: Policy check (OPA — baseline + custom + exceptions)
