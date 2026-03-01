@@ -202,7 +202,7 @@ tasks:
         if [ -f /opt/semgrep-venv/bin/osemgrep ]; then
           ln -sf /opt/semgrep-venv/bin/osemgrep /usr/local/bin/osemgrep
         fi
-        SEMGREP_SETTINGS_FILE=/dev/null semgrep --version || { echo "❌ semgrep not functional"; exit 1; }
+        TMPSG=$(mktemp -d) && SEMGREP_SETTINGS_FILE="$TMPSG/s.yml" semgrep --version && rm -rf "$TMPSG" || { echo "❌ semgrep not functional"; exit 1; }
         echo "✅ Semgrep {{.SEMGREP_VERSION}} installed"
     status:
       - which semgrep
@@ -218,7 +218,7 @@ tasks:
         echo -n "opa:    " && opa version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
         echo -n "oras:   " && oras version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
         echo -n "yq:     " && yq --version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
-        echo -n "semgrep: " && SEMGREP_SETTINGS_FILE=/dev/null semgrep --version 2>/dev/null || echo "❌ NOT INSTALLED"
+        echo -n "semgrep: " && TMPSG=$(mktemp -d) && SEMGREP_SETTINGS_FILE="$TMPSG/s.yml" semgrep --version 2>/dev/null && rm -rf "$TMPSG" || echo "❌ NOT INSTALLED"
 
   # ==========================================================================
   # PHASE 1 - BUILD
