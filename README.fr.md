@@ -30,7 +30,7 @@
 
 ```
 ══════════════════════════════════════════════════════
-  GATE : si l'etape 3, 7 ou 9 echoue → PIPELINE STOP
+  GATE : si l'etape 3, 6, 7 ou 9 echoue → PIPELINE STOP
   Rien n'est publie. L'image reste locale.
 ══════════════════════════════════════════════════════
 ```

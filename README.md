@@ -30,7 +30,7 @@
 
 ```
 ══════════════════════════════════════════════════════
-  GATE: if step 3, 7 or 9 fails → PIPELINE STOPS
+  GATE: if step 3, 6, 7 or 9 fails → PIPELINE STOPS
   Nothing is published. The image stays local.
 ══════════════════════════════════════════════════════
 ```
