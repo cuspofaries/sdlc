@@ -174,7 +174,7 @@ jobs:
       - name: Create test app
         run: |
           mkdir -p app
-          printf 'FROM alpine:latest\nRUN apk add --no-cache curl jq\nCOPY main.py /app/main.py\nCMD ["python3", "/app/main.py"]\n' > app/Dockerfile
+          printf 'FROM alpine:latest\nRUN apk add --no-cache curl jq\nRUN adduser -D appuser\nCOPY main.py /app/main.py\nUSER appuser\nCMD ["python3", "/app/main.py"]\n' > app/Dockerfile
           cat > app/main.py <<'PY'
           import json
           import sys
