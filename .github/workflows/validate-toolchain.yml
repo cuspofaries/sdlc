@@ -172,15 +172,16 @@ jobs:
           cat > app/main.py <<'PY'
           import json
           import sys
-
           def main():
               print(json.dumps({"status": "ok"}))
               return 0
-
           if __name__ == "__main__":
               sys.exit(main())
           PY
+          sed -i 's/^          //' app/main.py
           cat app/Dockerfile
+          echo "--- main.py ---"
+          cat app/main.py
 
       # --- PHASE 1: BUILD (same task as prod) ---
       - name: "Phase 1: Build"
