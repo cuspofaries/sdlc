@@ -188,6 +188,7 @@ tasks:
     cmds:
       - |
         pipx install semgrep=={{.SEMGREP_VERSION}}
+        pipx inject semgrep setuptools
         export PATH="/opt/pipx_bin:$HOME/.local/bin:$PATH"
         ln -sf "$(which semgrep)" /usr/local/bin/semgrep
         ln -sf "$(which pysemgrep)" /usr/local/bin/pysemgrep
