@@ -111,8 +111,10 @@ jobs:
 
     steps:
       # =====================================================================
-      # PHASE 1 — BUILD (nothing leaves the runner)
+      # PHASE 1 — BUILD + SAST (nothing leaves the runner)
       # =====================================================================
+      # SAST runs first: it only needs source code, not the image.
+      # Fail-fast: if code has security issues, don't waste time building.
 
       - name: Checkout caller repo
         uses: actions/checkout@v4
@@ -123,6 +125,23 @@ jobs:
           repository: cuspofaries/sdlc
           ref: main
           path: .sdlc
+
+      - name: Scan source code (SAST — Semgrep)
+        if: ${{ inputs.sast }}
+        run: |
+          SEMGREP_VERSION=$(grep 'SEMGREP_VERSION:' .sdlc/Taskfile.yml | head -1 | sed "s/.*'\(.*\)'.*/\1/")
+          mkdir -p output/scans
+          echo "SAST scan: ${{ inputs.context }} (semgrep:${SEMGREP_VERSION})"
+          docker run --rm \
+            -v "$(pwd)/${{ inputs.context }}:/src" \
+            -v "$(pwd)/output/scans:/out" \
+            "returntocorp/semgrep:${SEMGREP_VERSION}" \
+            semgrep scan /src \
+              --config ${{ inputs.sast-config }} \
+              --severity ${{ inputs.sast-severity }} \
+              --json --json-output=/out/scan-sast.json \
+              --error
+          echo "SAST scan passed"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -235,23 +254,6 @@ jobs:
             --format json \
             --output output/scans/scan-sbom-trivy.json
           echo "SBOM scan complete (advisory)"
-
-      - name: Scan source code (SAST — Semgrep)
-        if: ${{ inputs.sast }}
-        run: |
-          SEMGREP_VERSION=$(grep 'SEMGREP_VERSION:' .sdlc/Taskfile.yml | head -1 | sed "s/.*'\(.*\)'.*/\1/")
-          mkdir -p output/scans
-          echo "SAST scan: ${{ inputs.context }} (semgrep:${SEMGREP_VERSION})"
-          docker run --rm \
-            -v "$(pwd)/${{ inputs.context }}:/src" \
-            -v "$(pwd)/output/scans:/out" \
-            "returntocorp/semgrep:${SEMGREP_VERSION}" \
-            semgrep scan /src \
-              --config ${{ inputs.sast-config }} \
-              --severity ${{ inputs.sast-severity }} \
-              --json --json-output=/out/scan-sast.json \
-              --error
-          echo "SAST scan passed"
 
       - name: Policy check (OPA — baseline + custom + exceptions)
         run: |

@@ -8,9 +8,9 @@ version: '3'
 # Usage:
 #   task install               → Install all tools
 #   task build                 → Build container image (local, no push)
+#   task sast:scan             → Scan source code (SAST, runs via Docker)
 #   task sbom:generate         → Generate image SBOM (CycloneDX)
 #   task sbom:scan             → Scan image for vulnerabilities
-#   task sast:scan             → Scan source code (SAST)
 #   task sbom:policy           → Enforce OPA policies
 #   task opa:test              → Run OPA unit tests
 #   task push                  → Push image to registry
@@ -477,17 +477,20 @@ tasks:
   # FULL PIPELINES
   # ==========================================================================
 
+  _build-and-sast:
+    internal: true
+    deps: [build, sast:scan]
+
   pipeline:
-    desc: "Full supply chain pipeline (build -> analyze -> GATE -> publish)"
+    desc: "Full supply chain pipeline (build + SAST -> analyze -> GATE -> publish)"
     cmds:
       - echo "🚀 Starting full supply chain pipeline..."
-      - echo "=== PHASE 1 - BUILD ==="
-      - task: build
+      - echo "=== PHASE 1 - BUILD + SAST (parallel) ==="
+      - task: _build-and-sast
       - echo ""
       - echo "=== PHASE 2 - ANALYZE ==="
       - task: sbom:generate
       - task: sbom:scan
-      - task: sast:scan
       - task: sbom:policy
       - echo ""
       - echo "=== GATE PASSED ==="
@@ -508,16 +511,15 @@ tasks:
       - echo "=================================================="
 
   pipeline:local:
-    desc: "Local pipeline (build -> analyze, no publish)"
+    desc: "Local pipeline (build + SAST -> analyze, no publish)"
     cmds:
       - echo "🚀 Starting local pipeline..."
-      - echo "=== PHASE 1 - BUILD ==="
-      - task: build
+      - echo "=== PHASE 1 - BUILD + SAST (parallel) ==="
+      - task: _build-and-sast
       - echo ""
       - echo "=== PHASE 2 - ANALYZE ==="
       - task: sbom:generate
       - task: sbom:scan
-      - task: sast:scan
       - task: sbom:policy
       - echo ""
       - echo "=== SBOM GOVERNANCE ==="

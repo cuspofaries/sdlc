@@ -54,15 +54,15 @@ pool:
 stages:
 
   # ===========================================================================
-  # PHASE 1 + 2 — Build & Analyze (nothing leaves the runner)
+  # PHASE 1 + 2 — SAST + Build & Analyze (nothing leaves the runner)
   # ===========================================================================
   - stage: BuildAndAnalyze
-    displayName: 'Build & Analyze'
+    displayName: 'SAST + Build & Analyze'
     condition: ne(variables['Build.Reason'], 'Schedule')
 
     jobs:
       - job: BuildAndAnalyze
-        displayName: 'Build, SBOM, Scan & Policy'
+        displayName: 'SAST, Build, SBOM, Scan & Policy'
         timeoutInMinutes: 30
 
         steps:
@@ -74,7 +74,12 @@ stages:
           - script: sudo task install
             displayName: 'Install SBOM Tools'
 
-          # PHASE 1 — Build (local only, no push)
+          # PHASE 1 — SAST + Build
+          # SAST runs first: it only needs source code, not the image.
+          # Fail-fast: if code has security issues, don't waste time building.
+          - script: task sast:scan
+            displayName: 'Scan Source Code (SAST — Semgrep)'
+
           - script: task build IMAGE_TAG=$(IMAGE_TAG)
             displayName: 'Build Image (local, no push)'
 
@@ -98,9 +103,6 @@ stages:
 
           - script: task sbom:scan IMAGE_TAG=$(IMAGE_TAG)
             displayName: 'Scan Vulnerabilities (trivy image — security gate)'
-
-          - script: task sast:scan
-            displayName: 'Scan Source Code (SAST — Semgrep)'
 
           - script: task sbom:scan:sbom IMAGE_TAG=$(IMAGE_TAG)
             displayName: 'Scan SBOM (trivy sbom — governance alignment)'
