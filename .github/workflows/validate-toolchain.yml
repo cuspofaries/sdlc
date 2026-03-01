@@ -165,10 +165,21 @@ jobs:
       - name: Generate keypair
         run: cosign generate-key-pair
 
-      - name: Create test Dockerfile
+      - name: Create test app
         run: |
           mkdir -p app
-          printf 'FROM alpine:latest\nRUN apk add --no-cache curl jq\nCMD ["echo", "SDLC test image"]\n' > app/Dockerfile
+          printf 'FROM alpine:latest\nRUN apk add --no-cache curl jq\nCOPY main.py /app/main.py\nCMD ["python3", "/app/main.py"]\n' > app/Dockerfile
+          cat > app/main.py <<'PY'
+          import json
+          import sys
+
+          def main():
+              print(json.dumps({"status": "ok"}))
+              return 0
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          PY
           cat app/Dockerfile
 
       # --- PHASE 1: BUILD (same task as prod) ---
