@@ -239,12 +239,15 @@ jobs:
       - name: Install Semgrep
         if: ${{ inputs.sast }}
         run: |
-          pipx install semgrep
-          pipx inject semgrep setuptools
-          export PATH="/opt/pipx_bin:$HOME/.local/bin:$PATH"
-          sudo ln -sf "$(which semgrep)" /usr/local/bin/semgrep
-          sudo ln -sf "$(which pysemgrep)" /usr/local/bin/pysemgrep
-          which osemgrep 2>/dev/null && sudo ln -sf "$(which osemgrep)" /usr/local/bin/osemgrep
+          python3 -m venv --system-site-packages /opt/semgrep-venv
+          /opt/semgrep-venv/bin/pip install setuptools semgrep
+          printf '#!/bin/bash\nexec /opt/semgrep-venv/bin/semgrep "$@"\n' | sudo tee /usr/local/bin/semgrep > /dev/null
+          sudo chmod +x /usr/local/bin/semgrep
+          printf '#!/bin/bash\nexec /opt/semgrep-venv/bin/pysemgrep "$@"\n' | sudo tee /usr/local/bin/pysemgrep > /dev/null
+          sudo chmod +x /usr/local/bin/pysemgrep
+          if [ -f /opt/semgrep-venv/bin/osemgrep ]; then
+            sudo ln -sf /opt/semgrep-venv/bin/osemgrep /usr/local/bin/osemgrep
+          fi
           semgrep --version
 
       - name: Scan source code (SAST — Semgrep)
