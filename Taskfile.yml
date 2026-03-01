@@ -180,8 +180,11 @@ tasks:
   install:semgrep:
     desc: "Install Semgrep {{.SEMGREP_VERSION}}"
     cmds:
-      - pip install --break-system-packages semgrep=={{.SEMGREP_VERSION}}
-      - echo "✅ Semgrep {{.SEMGREP_VERSION}} installed"
+      - |
+        python3 -m venv /opt/semgrep-venv
+        /opt/semgrep-venv/bin/pip install semgrep=={{.SEMGREP_VERSION}}
+        ln -sf /opt/semgrep-venv/bin/semgrep /usr/local/bin/semgrep
+        echo "✅ Semgrep {{.SEMGREP_VERSION}} installed"
     status:
       - which semgrep
 

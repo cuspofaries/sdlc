@@ -232,7 +232,7 @@ jobs:
 
       - name: Install Semgrep
         if: ${{ inputs.sast }}
-        run: pip install --break-system-packages semgrep
+        run: pipx install semgrep
 
       - name: Scan source code (SAST — Semgrep)
         if: ${{ inputs.sast }}
