@@ -188,6 +188,10 @@ tasks:
     cmds:
       - |
         pipx install semgrep=={{.SEMGREP_VERSION}}
+        export PATH="/opt/pipx_bin:$HOME/.local/bin:$PATH"
+        ln -sf "$(which semgrep)" /usr/local/bin/semgrep
+        ln -sf "$(which pysemgrep)" /usr/local/bin/pysemgrep
+        [ -f "$(which osemgrep 2>/dev/null)" ] && ln -sf "$(which osemgrep)" /usr/local/bin/osemgrep
         semgrep --version || { echo "❌ semgrep not functional"; exit 1; }
         echo "✅ Semgrep {{.SEMGREP_VERSION}} installed"
     status:

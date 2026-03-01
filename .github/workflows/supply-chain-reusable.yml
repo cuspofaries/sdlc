@@ -240,6 +240,10 @@ jobs:
         if: ${{ inputs.sast }}
         run: |
           pipx install semgrep
+          export PATH="/opt/pipx_bin:$HOME/.local/bin:$PATH"
+          sudo ln -sf "$(which semgrep)" /usr/local/bin/semgrep
+          sudo ln -sf "$(which pysemgrep)" /usr/local/bin/pysemgrep
+          which osemgrep 2>/dev/null && sudo ln -sf "$(which osemgrep)" /usr/local/bin/osemgrep
           semgrep --version
 
       - name: Scan source code (SAST — Semgrep)
