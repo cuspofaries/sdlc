@@ -67,6 +67,21 @@ on:
         required: false
         type: boolean
         default: false
+      sast:
+        description: "Enable SAST scan (Semgrep)"
+        required: false
+        type: boolean
+        default: true
+      sast-config:
+        description: "Semgrep config/ruleset (default: p/owasp-top-ten)"
+        required: false
+        type: string
+        default: "p/owasp-top-ten"
+      sast-severity:
+        description: "Minimum SAST severity to report (ERROR, WARNING, INFO)"
+        required: false
+        type: string
+        default: "ERROR"
     secrets:
       REGISTRY_TOKEN:
         description: "Token to push image to registry (e.g. GITHUB_TOKEN)"
@@ -214,6 +229,22 @@ jobs:
             --format json \
             --output output/scans/scan-sbom-trivy.json
           echo "SBOM scan complete (advisory)"
+
+      - name: Install Semgrep
+        if: ${{ inputs.sast }}
+        run: pip install --break-system-packages semgrep
+
+      - name: Scan source code (SAST — Semgrep)
+        if: ${{ inputs.sast }}
+        run: |
+          mkdir -p output/scans
+          echo "SAST scan: ${{ inputs.context }}"
+          semgrep scan ${{ inputs.context }} \
+            --config ${{ inputs.sast-config }} \
+            --severity ${{ inputs.sast-severity }} \
+            --json --json-output=output/scans/scan-sast.json \
+            --error
+          echo "SAST scan passed"
 
       - name: Policy check (OPA — baseline + custom + exceptions)
         run: |

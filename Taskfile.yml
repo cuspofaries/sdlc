@@ -10,6 +10,7 @@ version: '3'
 #   task build                 → Build container image (local, no push)
 #   task sbom:generate         → Generate image SBOM (CycloneDX)
 #   task sbom:scan             → Scan image for vulnerabilities
+#   task sast:scan             → Scan source code (SAST)
 #   task sbom:policy           → Enforce OPA policies
 #   task opa:test              → Run OPA unit tests
 #   task push                  → Push image to registry
@@ -39,6 +40,12 @@ vars:
   TRIVY_EXIT_CODE: '{{.TRIVY_EXIT_CODE | default "1"}}'
   TRIVY_SEVERITY: '{{.TRIVY_SEVERITY | default "HIGH,CRITICAL"}}'
 
+  # -- SAST --
+  SAST_EXIT_CODE: '{{.SAST_EXIT_CODE | default "1"}}'
+  SAST_SEVERITY: '{{.SAST_SEVERITY | default "ERROR"}}'
+  SAST_CONFIG: '{{.SAST_CONFIG | default "p/owasp-top-ten"}}'
+  SAST_CONTEXT: '{{.SAST_CONTEXT | default "./app"}}'
+
   # -- Policy --
   EXTRA_POLICIES: '{{.EXTRA_POLICIES | default ""}}'
 
@@ -61,6 +68,7 @@ vars:
   OPA_VERSION: 'v1.13.1'    # renovate: datasource=github-releases depName=open-policy-agent/opa
   ORAS_VERSION: '1.3.0'     # renovate: datasource=github-releases depName=oras-project/oras
   YQ_VERSION: 'v4.52.4'     # renovate: datasource=github-releases depName=mikefarah/yq
+  SEMGREP_VERSION: '1.67.0'  # renovate: datasource=pypi depName=semgrep
   # Azure Key Vault KMS (recommended for enterprise)
   # Example: myorgvault.vault.azure.net/cosign-key
   COSIGN_KMS_KEY: '{{.COSIGN_KMS_KEY | default ""}}'
@@ -89,6 +97,7 @@ tasks:
       - task: install:opa
       - task: install:oras
       - task: install:yq
+      - task: install:semgrep
       - echo "✅ All tools installed"
       - task: install:verify
 
@@ -168,6 +177,14 @@ tasks:
     status:
       - which yq
 
+  install:semgrep:
+    desc: "Install Semgrep {{.SEMGREP_VERSION}}"
+    cmds:
+      - pip install --break-system-packages semgrep=={{.SEMGREP_VERSION}}
+      - echo "✅ Semgrep {{.SEMGREP_VERSION}} installed"
+    status:
+      - which semgrep
+
   install:verify:
     desc: "Verify all tools are installed"
     cmds:
@@ -179,6 +196,7 @@ tasks:
         echo -n "opa:    " && opa version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
         echo -n "oras:   " && oras version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
         echo -n "yq:     " && yq --version 2>/dev/null | head -1 || echo "❌ NOT INSTALLED"
+        echo -n "semgrep: " && semgrep --version 2>/dev/null || echo "❌ NOT INSTALLED"
 
   # ==========================================================================
   # PHASE 1 - BUILD
@@ -261,6 +279,21 @@ tasks:
           --severity {{.TRIVY_SEVERITY}} \
           --exit-code 0
       - echo "✅ SBOM scan complete (advisory) → {{.SCAN_DIR}}/scan-sbom-trivy.json"
+
+  sast:scan:
+    desc: "Scan source code for security issues (Semgrep SAST)"
+    cmds:
+      - mkdir -p {{.SCAN_DIR}}
+      - |
+        echo "🔍 SAST scan: {{.SAST_CONTEXT}}"
+        echo "   Config:   {{.SAST_CONFIG}}"
+        echo "   Severity: {{.SAST_SEVERITY}}"
+        semgrep scan {{.SAST_CONTEXT}} \
+          --config {{.SAST_CONFIG}} \
+          --severity {{.SAST_SEVERITY}} \
+          --json --json-output={{.SCAN_DIR}}/scan-sast.json \
+          --error
+        echo "✅ SAST scan passed → {{.SCAN_DIR}}/scan-sast.json"
 
   opa:test:
     desc: "Run OPA unit tests on policy rules"
@@ -453,6 +486,7 @@ tasks:
       - echo "=== PHASE 2 - ANALYZE ==="
       - task: sbom:generate
       - task: sbom:scan
+      - task: sast:scan
       - task: sbom:policy
       - echo ""
       - echo "=== GATE PASSED ==="
@@ -482,6 +516,7 @@ tasks:
       - echo "=== PHASE 2 - ANALYZE ==="
       - task: sbom:generate
       - task: sbom:scan
+      - task: sast:scan
       - task: sbom:policy
       - echo ""
       - echo "=== SBOM GOVERNANCE ==="
