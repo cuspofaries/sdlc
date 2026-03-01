@@ -238,7 +238,13 @@ jobs:
 
       - name: Install Semgrep
         if: ${{ inputs.sast }}
-        run: pip install --break-system-packages semgrep
+        run: |
+          python3 -m venv /opt/semgrep-venv
+          /opt/semgrep-venv/bin/pip install semgrep
+          for bin in /opt/semgrep-venv/bin/semgrep /opt/semgrep-venv/bin/osemgrep /opt/semgrep-venv/bin/pysemgrep; do
+            [ -f "$bin" ] && sudo ln -sf "$bin" /usr/local/bin/$(basename "$bin")
+          done
+          semgrep --version
 
       - name: Scan source code (SAST — Semgrep)
         if: ${{ inputs.sast }}
