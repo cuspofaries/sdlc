@@ -155,13 +155,18 @@ jobs:
 
       - name: Install Trivy
         run: |
+          TRIVY_VERSION=$(grep 'TRIVY_VERSION:' .sdlc/Taskfile.yml | head -1 | sed "s/.*'\(.*\)'.*/\1/")
+          DEB_URL="https://raw.githubusercontent.com/aquasecurity/trivy-repo/main/deb/pool/main/t/trivy/trivy_${TRIVY_VERSION}_amd64.deb"
           for i in 1 2 3; do
-            echo "Attempt $i to install trivy..."
-            if curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin; then
-              echo "Trivy installed successfully"
+            echo "Attempt $i to install trivy ${TRIVY_VERSION}..."
+            if curl -sfL -o /tmp/trivy.deb "$DEB_URL" \
+              && sudo dpkg -i /tmp/trivy.deb; then
+              rm -f /tmp/trivy.deb
+              echo "Trivy ${TRIVY_VERSION} installed successfully"
               break
             else
               echo "Attempt $i failed, retrying in 5 seconds..."
+              rm -f /tmp/trivy.deb
               sleep 5
             fi
             if [ $i -eq 3 ]; then
@@ -169,6 +174,7 @@ jobs:
               exit 1
             fi
           done
+          trivy version
 
       - name: Install OPA
         run: |

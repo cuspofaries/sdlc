@@ -105,13 +105,17 @@ tasks:
     desc: "Install Trivy {{.TRIVY_VERSION}}"
     cmds:
       - |
+        DEB_URL="https://raw.githubusercontent.com/aquasecurity/trivy-repo/main/deb/pool/main/t/trivy/trivy_{{.TRIVY_VERSION}}_amd64.deb"
         for i in 1 2 3; do
           echo "Attempt $i to install trivy {{.TRIVY_VERSION}}..."
-          if curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v{{.TRIVY_VERSION}}; then
+          if curl -sfL -o /tmp/trivy.deb "$DEB_URL" \
+            && dpkg -i /tmp/trivy.deb; then
+            rm -f /tmp/trivy.deb
             echo "✅ Trivy {{.TRIVY_VERSION}} installed"
             break
           else
             echo "⚠️  Attempt $i failed, retrying in 5 seconds..."
+            rm -f /tmp/trivy.deb
             sleep 5
           fi
           if [ $i -eq 3 ]; then
@@ -119,6 +123,8 @@ tasks:
             exit 1
           fi
         done
+        # Verify binary is actually usable
+        trivy version || { echo "❌ trivy binary not functional"; exit 1; }
     status:
       - which trivy
 
