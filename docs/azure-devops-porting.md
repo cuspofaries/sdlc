@@ -144,6 +144,23 @@ cosign verify-attestation --key azurekms://<vault>.vault.azure.net/<key> \
 
 ---
 
+## 11. SAST (Semgrep)
+
+`task sast:scan` est integre au pipeline (entre `sbom:scan` et `sbom:policy`). Il utilise Semgrep pour analyser le code source.
+
+| Variable | Defaut | Description |
+|----------|--------|-------------|
+| `SAST_CONFIG` | `p/owasp-top-ten` | Ruleset Semgrep (ou chemin vers `.semgrep.yml`) |
+| `SAST_SEVERITY` | `ERROR` | Severite minimale (`ERROR`, `WARNING`, `INFO`) |
+| `SAST_CONTEXT` | `./app` | Repertoire a scanner |
+
+Le repo consommateur peut surcharger avec :
+- `.semgrep.yml` pour des regles custom → passer `SAST_CONFIG=".semgrep.yml"` ou `sast-config: ".semgrep.yml"` (GitHub Actions)
+- `.semgrepignore` pour exclure des fichiers
+- `# nosemgrep` inline pour ignorer un finding specifique
+
+---
+
 ## Resume des fichiers a modifier
 
 | Fichier | Modifications | Priorite |

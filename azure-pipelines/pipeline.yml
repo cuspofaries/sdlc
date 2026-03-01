@@ -99,6 +99,9 @@ stages:
           - script: task sbom:scan IMAGE_TAG=$(IMAGE_TAG)
             displayName: 'Scan Vulnerabilities (trivy image — security gate)'
 
+          - script: task sast:scan
+            displayName: 'Scan Source Code (SAST — Semgrep)'
+
           - script: task sbom:scan:sbom IMAGE_TAG=$(IMAGE_TAG)
             displayName: 'Scan SBOM (trivy sbom — governance alignment)'
 
