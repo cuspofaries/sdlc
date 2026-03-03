@@ -62,7 +62,7 @@ vars:
   COSIGN_PUB: ./cosign.pub
 
   # -- Tool versions (pinned for reproducibility) --
-  TRIVY_VERSION: '0.69.1'   # renovate: datasource=github-releases depName=aquasecurity/trivy
+  TRIVY_VERSION: '0.69.2'   # renovate: datasource=github-releases depName=aquasecurity/trivy
   COSIGN_VERSION: 'v3.0.4'  # renovate: datasource=github-releases depName=sigstore/cosign
   CDXGEN_VERSION: '10.10.7' # renovate: datasource=npm depName=@cyclonedx/cdxgen
   OPA_VERSION: 'v1.13.1'    # renovate: datasource=github-releases depName=open-policy-agent/opa
